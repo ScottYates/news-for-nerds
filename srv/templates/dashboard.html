@@ -63,13 +63,56 @@
                 </div>
                 <div class="modal-body">
                     <div class="form-group">
+                        <label>Widget Type</label>
+                        <select id="widget-type">
+                            <option value="rss">RSS Feed</option>
+                            <option value="iframe">Web Page (iframe)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
                         <label>Title</label>
                         <input type="text" id="widget-title">
                     </div>
-                    <div class="form-group">
-                        <label>RSS Feed URL</label>
-                        <input type="text" id="widget-feed-url" placeholder="https://example.com/feed.xml">
+                    
+                    <!-- RSS-specific options -->
+                    <div id="rss-options">
+                        <div class="form-group">
+                            <label>RSS Feed URL</label>
+                            <input type="text" id="widget-feed-url" placeholder="https://example.com/feed.xml">
+                        </div>
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="widget-show-preview" checked>
+                                Show article previews
+                            </label>
+                        </div>
                     </div>
+                    
+                    <!-- Iframe-specific options -->
+                    <div id="iframe-options" class="hidden">
+                        <div class="form-group">
+                            <label>Page URL</label>
+                            <input type="text" id="widget-iframe-url" placeholder="https://example.com">
+                        </div>
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="widget-hide-scrollbars">
+                                Hide scrollbars
+                            </label>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group half">
+                                <label>Horizontal Offset</label>
+                                <input type="number" id="widget-offset-x" value="0" placeholder="0">
+                            </div>
+                            <div class="form-group half">
+                                <label>Vertical Offset</label>
+                                <input type="number" id="widget-offset-y" value="0" placeholder="0">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Common options -->
                     <div class="form-group">
                         <label>Background Color</label>
                         <input type="color" id="widget-bg-color" value="#16213e">
@@ -81,12 +124,6 @@
                     <div class="form-group">
                         <label>Text Color</label>
                         <input type="color" id="widget-text-color" value="#ffffff">
-                    </div>
-                    <div class="form-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="widget-show-preview" checked>
-                            Show article previews
-                        </label>
                     </div>
                 </div>
                 <div class="modal-footer">

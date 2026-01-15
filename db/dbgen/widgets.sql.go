@@ -130,11 +130,12 @@ func (q *Queries) GetWidgetsByPageID(ctx context.Context, pageID string) ([]Widg
 }
 
 const updateWidget = `-- name: UpdateWidget :exec
-UPDATE widgets SET title = ?, pos_x = ?, pos_y = ?, width = ?, height = ?, bg_color = ?, text_color = ?, header_color = ?, config = ?, updated_at = ? WHERE id = ?
+UPDATE widgets SET title = ?, widget_type = ?, pos_x = ?, pos_y = ?, width = ?, height = ?, bg_color = ?, text_color = ?, header_color = ?, config = ?, updated_at = ? WHERE id = ?
 `
 
 type UpdateWidgetParams struct {
 	Title       string    `json:"title"`
+	WidgetType  string    `json:"widget_type"`
 	PosX        int64     `json:"pos_x"`
 	PosY        int64     `json:"pos_y"`
 	Width       int64     `json:"width"`
@@ -150,6 +151,7 @@ type UpdateWidgetParams struct {
 func (q *Queries) UpdateWidget(ctx context.Context, arg UpdateWidgetParams) error {
 	_, err := q.db.ExecContext(ctx, updateWidget,
 		arg.Title,
+		arg.WidgetType,
 		arg.PosX,
 		arg.PosY,
 		arg.Width,

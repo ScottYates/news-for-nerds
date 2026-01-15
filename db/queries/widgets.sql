@@ -9,7 +9,7 @@ INSERT INTO widgets (id, page_id, title, widget_type, pos_x, pos_y, width, heigh
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: UpdateWidget :exec
-UPDATE widgets SET title = ?, pos_x = ?, pos_y = ?, width = ?, height = ?, bg_color = ?, text_color = ?, header_color = ?, config = ?, updated_at = ? WHERE id = ?;
+UPDATE widgets SET title = ?, widget_type = ?, pos_x = ?, pos_y = ?, width = ?, height = ?, bg_color = ?, text_color = ?, header_color = ?, config = ?, updated_at = ? WHERE id = ?;
 
 -- name: DeleteWidget :exec
 DELETE FROM widgets WHERE id = ?;

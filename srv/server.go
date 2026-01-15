@@ -258,6 +258,7 @@ func (s *Server) HandleAPIUpdateWidget(w http.ResponseWriter, r *http.Request) {
 
 	var input struct {
 		Title       *string `json:"title"`
+		WidgetType  *string `json:"widget_type"`
 		PosX        *int64  `json:"pos_x"`
 		PosY        *int64  `json:"pos_y"`
 		Width       *int64  `json:"width"`
@@ -275,6 +276,9 @@ func (s *Server) HandleAPIUpdateWidget(w http.ResponseWriter, r *http.Request) {
 	// Apply updates
 	if input.Title != nil {
 		widget.Title = *input.Title
+	}
+	if input.WidgetType != nil {
+		widget.WidgetType = *input.WidgetType
 	}
 	if input.PosX != nil {
 		widget.PosX = *input.PosX
@@ -303,6 +307,7 @@ func (s *Server) HandleAPIUpdateWidget(w http.ResponseWriter, r *http.Request) {
 
 	err = q.UpdateWidget(r.Context(), dbgen.UpdateWidgetParams{
 		Title:       widget.Title,
+		WidgetType:  widget.WidgetType,
 		PosX:        widget.PosX,
 		PosY:        widget.PosY,
 		Width:       widget.Width,

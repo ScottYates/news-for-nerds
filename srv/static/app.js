@@ -60,6 +60,11 @@ class FeedDeck {
         document.getElementById('btn-delete-widget').addEventListener('click', () => {
             this.deleteWidget();
         });
+        
+        // Widget type change
+        document.getElementById('widget-type').addEventListener('change', (e) => {
+            this.toggleWidgetTypeOptions(e.target.value);
+        });
 
         // Modal close buttons
         document.querySelectorAll('.modal-close').forEach(btn => {
@@ -139,12 +144,14 @@ class FeedDeck {
         el.style.color = widget.text_color || '#ffffff';
 
         const config = JSON.parse(widget.config || '{}');
+        const isIframe = widget.widget_type === 'iframe';
+        const refreshBtnHtml = isIframe ? '' : '<button class="widget-btn refresh-btn" title="Refresh">🔄</button>';
 
         el.innerHTML = `
             <div class="widget-header" style="background-color: ${widget.header_color || '#0f3460'}">
                 <span class="widget-title">${this.escapeHtml(widget.title)}</span>
                 <div class="widget-actions">
-                    <button class="widget-btn refresh-btn" title="Refresh">🔄</button>
+                    ${refreshBtnHtml}
                     <button class="widget-btn settings-btn" title="Settings">⚙️</button>
                 </div>
             </div>
@@ -168,18 +175,51 @@ class FeedDeck {
             this.showWidgetModal(widget.id);
         });
 
-        el.querySelector('.refresh-btn').addEventListener('click', () => {
-            this.refreshWidgetFeed(widget.id);
-        });
+        const refreshBtn = el.querySelector('.refresh-btn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', () => {
+                this.refreshWidgetFeed(widget.id);
+            });
+        }
 
-        // Load feed
-        if (config.feed_url) {
+        // Load content based on widget type
+        if (isIframe) {
+            this.loadIframe(widget.id, config);
+        } else if (config.feed_url) {
             this.loadFeed(widget.id, config.feed_url, config.show_preview !== false);
         } else {
             el.querySelector('.widget-body').innerHTML = `
                 <div class="feed-empty">No feed configured. Click ⚙️ to add one.</div>
             `;
         }
+    }
+    
+    loadIframe(widgetId, config) {
+        const el = document.getElementById(`widget-${widgetId}`);
+        const body = el.querySelector('.widget-body');
+        
+        if (!config.iframe_url) {
+            body.innerHTML = '<div class="feed-empty">No URL configured. Click ⚙️ to add one.</div>';
+            return;
+        }
+        
+        const hideScrollbars = config.hide_scrollbars ? 'hide-scrollbars' : '';
+        const offsetX = config.offset_x || 0;
+        const offsetY = config.offset_y || 0;
+        
+        // Calculate iframe size - make it larger if hiding scrollbars
+        const extraSize = config.hide_scrollbars ? 20 : 0;
+        
+        body.innerHTML = `
+            <div class="iframe-container ${hideScrollbars}">
+                <iframe 
+                    src="${this.escapeHtml(config.iframe_url)}"
+                    sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms"
+                    style="left: ${offsetX}px; top: ${offsetY}px; width: calc(100% + ${extraSize}px - ${offsetX}px); height: calc(100% + ${extraSize}px - ${offsetY}px);"
+                    loading="lazy"
+                ></iframe>
+            </div>
+        `;
     }
 
     setupDrag(el, widgetId) {
@@ -353,25 +393,66 @@ class FeedDeck {
         const config = JSON.parse(widget.config || '{}');
 
         document.getElementById('widget-modal-title').textContent = 'Widget Settings';
+        document.getElementById('widget-type').value = widget.widget_type || 'rss';
         document.getElementById('widget-title').value = widget.title;
+        
+        // RSS options
         document.getElementById('widget-feed-url').value = config.feed_url || '';
+        document.getElementById('widget-show-preview').checked = config.show_preview !== false;
+        
+        // Iframe options
+        document.getElementById('widget-iframe-url').value = config.iframe_url || '';
+        document.getElementById('widget-hide-scrollbars').checked = config.hide_scrollbars || false;
+        document.getElementById('widget-offset-x').value = config.offset_x || 0;
+        document.getElementById('widget-offset-y').value = config.offset_y || 0;
+        
+        // Common options
         document.getElementById('widget-bg-color').value = widget.bg_color || '#16213e';
         document.getElementById('widget-header-color').value = widget.header_color || '#0f3460';
         document.getElementById('widget-text-color').value = widget.text_color || '#ffffff';
-        document.getElementById('widget-show-preview').checked = config.show_preview !== false;
+        
+        // Show/hide type-specific options
+        this.toggleWidgetTypeOptions(widget.widget_type || 'rss');
 
         document.getElementById('widget-modal').classList.remove('hidden');
+    }
+    
+    toggleWidgetTypeOptions(type) {
+        const rssOptions = document.getElementById('rss-options');
+        const iframeOptions = document.getElementById('iframe-options');
+        
+        if (type === 'iframe') {
+            rssOptions.classList.add('hidden');
+            iframeOptions.classList.remove('hidden');
+        } else {
+            rssOptions.classList.remove('hidden');
+            iframeOptions.classList.add('hidden');
+        }
     }
 
     async saveWidget() {
         if (!this.editingWidgetId) return;
 
+        const widgetType = document.getElementById('widget-type').value;
         const title = document.getElementById('widget-title').value;
-        const feedUrl = document.getElementById('widget-feed-url').value;
         const bgColor = document.getElementById('widget-bg-color').value;
         const headerColor = document.getElementById('widget-header-color').value;
         const textColor = document.getElementById('widget-text-color').value;
-        const showPreview = document.getElementById('widget-show-preview').checked;
+        
+        let config = {};
+        if (widgetType === 'rss') {
+            config = {
+                feed_url: document.getElementById('widget-feed-url').value,
+                show_preview: document.getElementById('widget-show-preview').checked
+            };
+        } else if (widgetType === 'iframe') {
+            config = {
+                iframe_url: document.getElementById('widget-iframe-url').value,
+                hide_scrollbars: document.getElementById('widget-hide-scrollbars').checked,
+                offset_x: parseInt(document.getElementById('widget-offset-x').value) || 0,
+                offset_y: parseInt(document.getElementById('widget-offset-y').value) || 0
+            };
+        }
 
         try {
             const response = await fetch(`/api/widgets/${this.editingWidgetId}`, {
@@ -379,10 +460,11 @@ class FeedDeck {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     title,
+                    widget_type: widgetType,
                     bg_color: bgColor,
                     header_color: headerColor,
                     text_color: textColor,
-                    config: JSON.stringify({ feed_url: feedUrl, show_preview: showPreview })
+                    config: JSON.stringify(config)
                 })
             });
             const result = await response.json();
