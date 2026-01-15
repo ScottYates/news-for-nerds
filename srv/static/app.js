@@ -145,12 +145,16 @@ class FeedDeck {
 
         const config = JSON.parse(widget.config || '{}');
         const isIframe = widget.widget_type === 'iframe';
+        const isLocked = config.locked || false;
         const refreshBtnHtml = isIframe ? '' : '<button class="widget-btn refresh-btn" title="Refresh">🔄</button>';
+        const lockIcon = isLocked ? '🔒' : '🔓';
+        const lockTitle = isLocked ? 'Unlock widget' : 'Lock widget';
 
         el.innerHTML = `
             <div class="widget-header" style="background-color: ${widget.header_color || '#0f3460'}">
                 <span class="widget-title">${this.escapeHtml(widget.title)}</span>
                 <div class="widget-actions">
+                    <button class="widget-btn lock-btn" title="${lockTitle}">${lockIcon}</button>
                     ${refreshBtnHtml}
                     <button class="widget-btn settings-btn" title="Settings">⚙️</button>
                 </div>
@@ -160,6 +164,10 @@ class FeedDeck {
             </div>
             <div class="resize-handle"></div>
         `;
+        
+        if (isLocked) {
+            el.classList.add('locked');
+        }
 
         container.appendChild(el);
         this.widgets.set(widget.id, widget);
@@ -173,6 +181,10 @@ class FeedDeck {
         // Setup buttons
         el.querySelector('.settings-btn').addEventListener('click', () => {
             this.showWidgetModal(widget.id);
+        });
+        
+        el.querySelector('.lock-btn').addEventListener('click', () => {
+            this.toggleWidgetLock(widget.id);
         });
 
         const refreshBtn = el.querySelector('.refresh-btn');
@@ -229,6 +241,7 @@ class FeedDeck {
 
         header.addEventListener('mousedown', (e) => {
             if (e.target.closest('.widget-btn')) return;
+            if (el.classList.contains('locked')) return;
             
             isDragging = true;
             el.classList.add('dragging');
@@ -266,6 +279,8 @@ class FeedDeck {
         let startX, startY, startWidth, startHeight;
 
         handle.addEventListener('mousedown', (e) => {
+            if (el.classList.contains('locked')) return;
+            
             isResizing = true;
             el.classList.add('resizing');
             
@@ -361,6 +376,29 @@ class FeedDeck {
             }
         } catch (error) {
             body.innerHTML = `<div class="feed-error">⚠️ ${this.escapeHtml(error.message)}</div>`;
+        }
+    }
+    
+    async toggleWidgetLock(widgetId) {
+        const widget = this.widgets.get(widgetId);
+        if (!widget) return;
+        
+        const config = JSON.parse(widget.config || '{}');
+        config.locked = !config.locked;
+        
+        try {
+            const response = await fetch(`/api/widgets/${widgetId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ config: JSON.stringify(config) })
+            });
+            const result = await response.json();
+            
+            if (result.success && result.data) {
+                this.renderWidget(result.data);
+            }
+        } catch (error) {
+            console.error('Failed to toggle lock:', error);
         }
     }
 

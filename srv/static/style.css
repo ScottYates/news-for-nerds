@@ -349,6 +349,14 @@ body {
     opacity: 0.9;
 }
 
+.widget.locked .widget-header {
+    cursor: default;
+}
+
+.widget.locked .resize-handle {
+    display: none;
+}
+
 /* Checkbox styling */
 .checkbox-label {
     display: flex;
