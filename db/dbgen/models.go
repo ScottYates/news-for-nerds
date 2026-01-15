@@ -34,6 +34,13 @@ type RssFeed struct {
 	CreatedAt   time.Time  `json:"created_at"`
 }
 
+type VisitedLink struct {
+	ID        int64     `json:"id"`
+	UserID    string    `json:"user_id"`
+	LinkUrl   string    `json:"link_url"`
+	VisitedAt time.Time `json:"visited_at"`
+}
+
 type Visitor struct {
 	ID        string    `json:"id"`
 	ViewCount int64     `json:"view_count"`

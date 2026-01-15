@@ -395,6 +395,59 @@ func (s *Server) HandleAPIRefreshFeed(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: feed})
 }
 
+func (s *Server) HandleAPIMarkVisited(w http.ResponseWriter, r *http.Request) {
+	userID := strings.TrimSpace(r.Header.Get("X-ExeDev-UserID"))
+	if userID == "" {
+		userID = "anonymous"
+	}
+
+	var input struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid json"})
+		return
+	}
+
+	q := dbgen.New(s.DB)
+	err := q.MarkLinkVisited(r.Context(), dbgen.MarkLinkVisitedParams{
+		UserID:    userID,
+		LinkUrl:   input.URL,
+		VisitedAt: time.Now(),
+	})
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, APIResponse{Success: true})
+}
+
+func (s *Server) HandleAPIGetVisitedLinks(w http.ResponseWriter, r *http.Request) {
+	userID := strings.TrimSpace(r.Header.Get("X-ExeDev-UserID"))
+	if userID == "" {
+		userID = "anonymous"
+	}
+
+	q := dbgen.New(s.DB)
+	
+	// Clean up old links first (older than 48 hours)
+	cutoff := time.Now().Add(-48 * time.Hour)
+	_ = q.CleanupOldVisitedLinks(r.Context(), cutoff)
+
+	// Get visited links from last 48 hours
+	links, err := q.GetVisitedLinks(r.Context(), dbgen.GetVisitedLinksParams{
+		UserID:    userID,
+		VisitedAt: cutoff,
+	})
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: links})
+}
+
 func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 	pageID := r.PathValue("id")
 	userID := strings.TrimSpace(r.Header.Get("X-ExeDev-UserID"))
@@ -490,6 +543,8 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("PATCH /api/pages/{id}", s.HandleAPIUpdatePage)
 	mux.HandleFunc("GET /api/feed", s.HandleAPIGetFeed)
 	mux.HandleFunc("POST /api/feed/refresh", s.HandleAPIRefreshFeed)
+	mux.HandleFunc("POST /api/visited", s.HandleAPIMarkVisited)
+	mux.HandleFunc("GET /api/visited", s.HandleAPIGetVisitedLinks)
 
 	// Static files
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(s.StaticDir))))

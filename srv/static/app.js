@@ -8,6 +8,8 @@ class FeedDeck {
         this.editingWidgetId = null;
         this.gridSize = 0;
         this.showGrid = false;
+        this.headerSize = 'normal';
+        this.visitedLinks = new Set();
         
         this.init();
     }
@@ -15,6 +17,9 @@ class FeedDeck {
     async init() {
         // Load page config
         this.loadPageConfig();
+        
+        // Load visited links
+        await this.loadVisitedLinks();
         
         // Apply initial background
         this.applyBackground(
@@ -34,10 +39,44 @@ class FeedDeck {
             const config = JSON.parse(this.app.dataset.config || '{}');
             this.gridSize = config.grid_size || 0;
             this.showGrid = config.show_grid || false;
+            this.headerSize = config.header_size || 'normal';
             this.updateGridDisplay();
+            this.applyHeaderSize();
         } catch (e) {
             console.error('Failed to parse page config:', e);
         }
+    }
+    
+    async loadVisitedLinks() {
+        try {
+            const response = await fetch('/api/visited');
+            const result = await response.json();
+            if (result.success && result.data) {
+                this.visitedLinks = new Set(result.data);
+            }
+        } catch (e) {
+            console.error('Failed to load visited links:', e);
+        }
+    }
+    
+    async markLinkVisited(url) {
+        if (this.visitedLinks.has(url)) return;
+        this.visitedLinks.add(url);
+        
+        try {
+            await fetch('/api/visited', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url })
+            });
+        } catch (e) {
+            console.error('Failed to mark link visited:', e);
+        }
+    }
+    
+    applyHeaderSize() {
+        const sizes = { compact: '32px', normal: '44px', large: '56px' };
+        document.documentElement.style.setProperty('--widget-header-height', sizes[this.headerSize] || '44px');
     }
     
     updateGridDisplay() {
@@ -295,7 +334,9 @@ class FeedDeck {
             const dy = e.clientY - startY;
 
             let newLeft = Math.max(0, startLeft + dx);
-            let newTop = Math.max(60, startTop + dy);
+            // Allow widgets closer to top when grid is enabled
+            const minTop = this.gridSize > 0 ? 50 : 60;
+            let newTop = Math.max(minTop, startTop + dy);
             
             // Snap to grid
             newLeft = this.snapToGrid(newLeft);
@@ -408,8 +449,10 @@ class FeedDeck {
                 }
 
                 const compactClass = showPreview ? '' : ' compact';
-                body.innerHTML = feed.items.map(item => `
-                    <div class="feed-item${compactClass}">
+                body.innerHTML = feed.items.map(item => {
+                    const visitedClass = this.visitedLinks.has(item.link) ? ' visited' : '';
+                    return `
+                    <div class="feed-item${compactClass}${visitedClass}" data-link="${this.escapeHtml(item.link)}">
                         <div class="feed-item-title">
                             <a href="${this.escapeHtml(item.link)}" target="_blank" rel="noopener">
                                 ${this.escapeHtml(item.title)}
@@ -418,7 +461,17 @@ class FeedDeck {
                         ${item.published ? `<div class="feed-item-meta">${this.formatDate(item.published)}</div>` : ''}
                         ${showPreview && item.description ? `<div class="feed-item-description">${this.escapeHtml(item.description)}</div>` : ''}
                     </div>
-                `).join('');
+                `}).join('');
+                
+                // Add click handlers to mark links as visited
+                body.querySelectorAll('.feed-item a').forEach(link => {
+                    link.addEventListener('click', () => {
+                        const feedItem = link.closest('.feed-item');
+                        const url = feedItem.dataset.link;
+                        feedItem.classList.add('visited');
+                        this.markLinkVisited(url);
+                    });
+                });
             } else {
                 body.innerHTML = '<div class="feed-error">Failed to load feed</div>';
             }
@@ -587,6 +640,7 @@ class FeedDeck {
         // Populate current values
         document.getElementById('setting-grid-size').value = this.gridSize;
         document.getElementById('setting-show-grid').checked = this.showGrid;
+        document.getElementById('setting-header-size').value = this.headerSize;
         document.getElementById('settings-modal').classList.remove('hidden');
     }
 
@@ -596,10 +650,12 @@ class FeedDeck {
         const bgImage = document.getElementById('setting-bg-image').value;
         const gridSize = parseInt(document.getElementById('setting-grid-size').value) || 0;
         const showGrid = document.getElementById('setting-show-grid').checked;
+        const headerSize = document.getElementById('setting-header-size').value;
         
         const config = JSON.stringify({
             grid_size: gridSize,
-            show_grid: showGrid
+            show_grid: showGrid,
+            header_size: headerSize
         });
 
         try {
@@ -620,7 +676,9 @@ class FeedDeck {
                 document.getElementById('page-name').textContent = name;
                 this.gridSize = gridSize;
                 this.showGrid = showGrid;
+                this.headerSize = headerSize;
                 this.updateGridDisplay();
+                this.applyHeaderSize();
                 this.hideModals();
             }
         } catch (error) {

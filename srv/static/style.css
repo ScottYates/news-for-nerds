@@ -105,7 +105,8 @@ body {
 }
 
 .widget-header {
-    padding: 12px 15px;
+    padding: 0 15px;
+    height: var(--widget-header-height);
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -355,6 +356,20 @@ body {
 
 .widget.locked .resize-handle {
     display: none;
+}
+
+/* Visited feed items */
+.feed-item.visited {
+    opacity: 0.5;
+}
+
+.feed-item.visited .feed-item-title a {
+    color: #888;
+}
+
+/* Configurable header size */
+:root {
+    --widget-header-height: 44px;
 }
 
 /* Checkbox styling */

@@ -77,6 +77,7 @@ func (s *Server) refreshAllFeeds(ctx context.Context) {
 
 func (s *Server) fetchAndStoreFeed(ctx context.Context, url string) {
 	parser := gofeed.NewParser()
+	parser.UserAgent = "FeedDeck/1.0 (+https://github.com/feeddeck)"
 	parser.Client = s.httpClient
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
