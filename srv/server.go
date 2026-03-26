@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"srv.exe.dev/db"
@@ -25,6 +27,70 @@ func isValidSlug(slug string) bool {
 		return false
 	}
 	return slugRegex.MatchString(slug)
+}
+
+// slugify converts a name or email into a URL-friendly slug.
+// "Scott Yates" -> "scott-yates", "beernutz@gmail.com" -> "beernutz"
+func slugify(name, email string) string {
+	raw := name
+	if raw == "" {
+		raw = email
+	}
+	// Use part before @ for emails
+	if idx := strings.Index(raw, "@"); idx > 0 {
+		raw = raw[:idx]
+	}
+	// Lowercase, replace non-alphanum with hyphens, collapse runs, trim
+	var b strings.Builder
+	lastHyphen := true // avoid leading hyphen
+	for _, r := range strings.ToLower(raw) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			lastHyphen = false
+		} else if !lastHyphen {
+			b.WriteByte('-')
+			lastHyphen = true
+		}
+	}
+	s := strings.TrimRight(b.String(), "-")
+	if s == "" {
+		s = "page"
+	}
+	if len(s) > 48 {
+		s = s[:48]
+	}
+	return s
+}
+
+// assignSlug picks a unique slug for a page based on name/email.
+// Tries "scott-yates", then "scott-yates-2", "scott-yates-3", etc.
+func (s *Server) assignSlug(ctx context.Context, q *dbgen.Queries, pageID, name, email string) string {
+	base := slugify(name, email)
+	candidate := base
+	for i := 2; i < 100; i++ {
+		count, err := q.CheckSlugExists(ctx, dbgen.CheckSlugExistsParams{
+			Slug: &candidate,
+			ID:   pageID,
+		})
+		if err != nil || count == 0 {
+			break
+		}
+		candidate = fmt.Sprintf("%s-%d", base, i)
+	}
+	now := time.Now()
+	_ = q.UpdatePageSlug(ctx, dbgen.UpdatePageSlugParams{
+		Slug:      &candidate,
+		UpdatedAt: now,
+		ID:        pageID,
+	})
+	// Enable slug access so the owner can reach the page via slug URL
+	slugAccess := int64(1)
+	_ = q.UpdatePageSlugAccess(ctx, dbgen.UpdatePageSlugAccessParams{
+		SlugAccess: &slugAccess,
+		UpdatedAt:  now,
+		ID:         pageID,
+	})
+	return candidate
 }
 
 type Server struct {
@@ -85,13 +151,32 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			slog.Warn("failed to create default page", "error", err)
 		}
-		// Redirect to the new page
-		http.Redirect(w, r, "/page/"+pageID, http.StatusFound)
+		// Auto-assign slug from user name/email
+		slug := ""
+		if session, err := s.GetUserFromRequest(r); err == nil {
+			slug = s.assignSlug(r.Context(), q, pageID, session.UserName, session.Email)
+		}
+		if slug != "" {
+			http.Redirect(w, r, "/page/"+slug, http.StatusFound)
+		} else {
+			http.Redirect(w, r, "/page/"+pageID, http.StatusFound)
+		}
 		return
 	}
 
-	// Redirect to first page
-	http.Redirect(w, r, "/page/"+pages[0].ID, http.StatusFound)
+	// Redirect to slug if available, otherwise ID
+	page := pages[0]
+	if page.Slug != nil && *page.Slug != "" {
+		http.Redirect(w, r, "/page/"+*page.Slug, http.StatusFound)
+	} else {
+		// Try to assign a slug now if user is logged in
+		if session, err := s.GetUserFromRequest(r); err == nil {
+			slug := s.assignSlug(r.Context(), q, page.ID, session.UserName, session.Email)
+			http.Redirect(w, r, "/page/"+slug, http.StatusFound)
+			return
+		}
+		http.Redirect(w, r, "/page/"+page.ID, http.StatusFound)
+	}
 }
 
 func (s *Server) HandlePage(w http.ResponseWriter, r *http.Request) {

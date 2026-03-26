@@ -267,6 +267,14 @@ func (s *Server) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Auto-assign slugs to any of this user's pages that don't have one
+	userPages, _ := q.GetPagesByUserID(ctx, user.ID)
+	for _, pg := range userPages {
+		if pg.Slug == nil || *pg.Slug == "" {
+			s.assignSlug(ctx, q, pg.ID, userInfo.Name, userInfo.Email)
+		}
+	}
+
 	// Create session
 	sessionID := uuid.New().String()
 	err = q.CreateSession(ctx, dbgen.CreateSessionParams{
