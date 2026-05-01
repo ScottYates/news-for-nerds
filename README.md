@@ -111,7 +111,7 @@ journalctl -u newsfornerds -f  # View logs
 ### 4. Restart After Updates
 
 ```bash
-go build -o newsfornerds ./cmd/srv
+make build
 sudo systemctl restart newsfornerds
 ```
 
