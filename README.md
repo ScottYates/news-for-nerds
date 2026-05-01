@@ -9,23 +9,25 @@ A customizable RSS dashboard for news junkies. Create pages with draggable, resi
 - **HTML Widgets**: Create custom content with a visual WYSIWYG editor (TinyMCE)
 - **Drag & Drop**: Freely position widgets anywhere on the canvas
 - **Resizable**: Resize widgets by dragging corners/edges
-- **Multiple Pages**: Create multiple dashboard pages
+- **Multiple Pages**: Create multiple dashboard pages with custom URL slugs
 - **Customizable**: Per-widget colors, backgrounds, grid snapping
+- **Import/Export**: Batch import/export widget layouts as JSON
 - **Keyboard Shortcuts**: Quick actions (press `?` to see all)
-- **Google OAuth**: Secure authentication
+- **Google OAuth**: Secure authentication with automatic page migration
+- **Visitor Mode**: Use the app without logging in; pages transfer to your account on login
 
 ## Requirements
 
-- Go 1.21+ 
-- SQLite (embedded, no separate install needed)
-- Google OAuth credentials (for authentication)
+- Go 1.25+
+- SQLite (embedded via modernc.org/sqlite, no separate install needed)
+- Google OAuth credentials (optional, for persistent accounts)
 
 ## Quick Start
 
 ### 1. Clone and Build
 
 ```bash
-git clone <repository-url> newsfornerds
+git clone https://github.com/ScottYates/news-for-nerds.git newsfornerds
 cd newsfornerds
 go build -o newsfornerds ./cmd/srv
 ```
@@ -54,6 +56,8 @@ GOOGLE_CLIENT_SECRET=your-client-secret
 5. Add authorized redirect URI: `https://your-domain.com/auth/callback`
 6. Copy the Client ID and Client Secret to your `.env` file
 
+> **Note:** The app works without OAuth — visitors get a cookie-based identity and can create/manage pages. OAuth lets users persist their account across devices.
+
 ### 3. Run the Server
 
 ```bash
@@ -62,24 +66,39 @@ GOOGLE_CLIENT_SECRET=your-client-secret
 
 The server will automatically create `db.sqlite3` and run migrations on first start.
 
+Visit `http://localhost:8000` to use the app.
+
 ## Running as a Systemd Service
 
-For production deployment, run as a systemd service:
+For production deployment, create a systemd service:
 
-### 1. Install the Service File
+### 1. Create the Service File
 
 ```bash
-sudo cp newsfornerds.service /etc/systemd/system/newsfornerds.service
-```
+sudo tee /etc/systemd/system/newsfornerds.service > /dev/null <<EOF
+[Unit]
+Description=NewsForNerds RSS Dashboard
+After=network.target
 
-Edit the service file if needed to match your installation path.
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=$(pwd)
+EnvironmentFile=$(pwd)/.env
+ExecStart=$(pwd)/newsfornerds -listen :8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
 
 ### 2. Enable and Start
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable newsfornerds.service
-sudo systemctl start newsfornerds
+sudo systemctl enable --now newsfornerds
 ```
 
 ### 3. Check Status
@@ -96,20 +115,41 @@ go build -o newsfornerds ./cmd/srv
 sudo systemctl restart newsfornerds
 ```
 
+## Deploying on exe.dev
+
+```bash
+git clone https://github.com/ScottYates/news-for-nerds.git newsfornerds
+cd newsfornerds
+go build -o newsfornerds ./cmd/srv
+cp .env.example .env
+# Edit .env with your Google OAuth credentials
+# Set redirect URI to: https://your-vm-name.exe.xyz:8000/auth/callback
+sudo cp newsfornerds.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now newsfornerds
+```
+
+Your app will be available at `https://your-vm-name.exe.xyz:8000/`.
+
 ## Project Structure
 
 ```
 newsfornerds/
 ├── cmd/srv/           # Main entry point
 ├── srv/               # HTTP server and handlers
+│   ├── auth.go        # Google OAuth & visitor identity
+│   ├── server.go      # Routes, API handlers, slug management
+│   ├── rss.go         # RSS/Atom feed fetching & parsing
+│   ├── proxy.go       # Feed proxy support
+│   ├── favicon.go     # Favicon detection
 │   ├── templates/     # Go HTML templates
-│   └── static/        # CSS, JavaScript, images
+│   └── static/        # CSS, JavaScript
 ├── db/                # Database layer
-│   ├── migrations/    # SQL migration files
+│   ├── migrations/    # SQL migration files (auto-applied)
 │   ├── queries/       # SQL queries for sqlc
-│   └── dbgen/         # Generated query code
+│   ├── dbgen/         # Generated query code
+│   └── sqlc.yaml      # sqlc configuration
 ├── .env.example       # Environment template
-├── newsfornerds.service  # Systemd service file
+├── Makefile           # Build shortcuts
 └── go.mod             # Go module definition
 ```
 
@@ -127,8 +167,8 @@ Migrations are located in `db/migrations/` and run automatically in order.
 
 ### Environment Variables
 
-- `GOOGLE_CLIENT_ID`: Google OAuth client ID (required)
-- `GOOGLE_CLIENT_SECRET`: Google OAuth client secret (required)
+- `GOOGLE_CLIENT_ID`: Google OAuth client ID (optional)
+- `GOOGLE_CLIENT_SECRET`: Google OAuth client secret (optional)
 
 ## Usage Tips
 
@@ -148,191 +188,51 @@ Press `?` on the dashboard to see all available shortcuts:
 2. **Iframe**: Embed websites with optional CSS injection to hide elements
 3. **HTML**: Create custom content with the visual editor
 
+### Custom Page URLs
+
+Pages are automatically assigned a URL slug based on your name (e.g., `/page/scott-yates`). You can customize the slug in **Settings** → **Custom URL**. Live availability checking ensures your chosen slug is unique.
+
+### Import/Export
+
+Export your widget layout as JSON from Settings, and import it on another page or instance. Import is atomic — all widgets are created in a single transaction.
+
 ### Customization
 
 - **Colors**: Each widget can have custom background, header, and text colors
 - **Grid Snapping**: Enable grid in settings for aligned layouts
 - **Lock Widgets**: Prevent accidental moves with the lock button
 - **Header Size**: Adjust widget header height in page settings
-
-## Hosting on YunoHost
-
-YunoHost is a self-hosting platform that simplifies server administration. Here's how to deploy NewsForNerds on YunoHost.
-
-### Prerequisites
-
-- A YunoHost server (v11+)
-- SSH access to your server
-- A domain or subdomain configured in YunoHost
-
-### 1. Install Go
-
-SSH into your YunoHost server and install Go:
-
-```bash
-sudo apt update
-sudo apt install golang-go
-```
-
-Or install a newer version manually:
-
-```bash
-wget https://go.dev/dl/go1.21.6.linux-amd64.tar.gz
-sudo tar -C /usr/local -xzf go1.21.6.linux-amd64.tar.gz
-export PATH=$PATH:/usr/local/go/bin
-```
-
-### 2. Create App Directory and Build
-
-```bash
-sudo mkdir -p /opt/newsfornerds
-sudo chown $USER:$USER /opt/newsfornerds
-cd /opt/newsfornerds
-
-# Clone or copy the source code
-git clone <repository-url> .
-
-# Build the binary
-go build -o newsfornerds ./cmd/srv
-```
-
-### 3. Configure Environment
-
-```bash
-cp .env.example .env
-nano .env
-```
-
-Add your Google OAuth credentials. Set the redirect URI in Google Cloud Console to:
-`https://your-domain.com/auth/callback`
-
-### 4. Create Systemd Service
-
-```bash
-sudo nano /etc/systemd/system/newsfornerds.service
-```
-
-Paste:
-
-```ini
-[Unit]
-Description=NewsForNerds RSS Dashboard
-After=network.target
-
-[Service]
-Type=simple
-User=www-data
-WorkingDirectory=/opt/newsfornerds
-EnvironmentFile=/opt/newsfornerds/.env
-ExecStart=/opt/newsfornerds/newsfornerds -listen 127.0.0.1:8000
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
-
-```bash
-sudo chown -R www-data:www-data /opt/newsfornerds
-sudo systemctl daemon-reload
-sudo systemctl enable newsfornerds
-sudo systemctl start newsfornerds
-```
-
-### 5. Configure Nginx Reverse Proxy
-
-Create an Nginx config for your domain:
-
-```bash
-sudo nano /etc/nginx/conf.d/newsfornerds.conf
-```
-
-Paste (replace `newsfornerds.yourdomain.com` with your actual domain):
-
-```nginx
-server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    server_name newsfornerds.yourdomain.com;
-
-    # SSL managed by YunoHost
-    include /etc/nginx/conf.d/ssl/newsfornerds.yourdomain.com.conf;
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_read_timeout 86400;
-    }
-}
-
-server {
-    listen 80;
-    listen [::]:80;
-    server_name newsfornerds.yourdomain.com;
-    return 301 https://$server_name$request_uri;
-}
-```
-
-### 6. Set Up SSL with YunoHost
-
-Add the domain in YunoHost admin panel, then install Let's Encrypt certificate:
-
-```bash
-sudo yunohost domain add newsfornerds.yourdomain.com
-sudo yunohost domain cert install newsfornerds.yourdomain.com
-```
-
-Or if using a subdomain of an existing domain, the wildcard cert may already cover it.
-
-### 7. Reload Nginx
-
-```bash
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-### 8. Verify
-
-Visit `https://newsfornerds.yourdomain.com` and sign in with Google.
-
-### Updating NewsForNerds on YunoHost
-
-```bash
-cd /opt/newsfornerds
-git pull
-go build -o newsfornerds ./cmd/srv
-sudo systemctl restart newsfornerds
-```
-
-### Troubleshooting
-
-- **Check service status**: `sudo systemctl status newsfornerds`
-- **View logs**: `sudo journalctl -u newsfornerds -f`
-- **Check Nginx errors**: `sudo tail -f /var/log/nginx/error.log`
-- **Test local connection**: `curl http://127.0.0.1:8000/`
+- **Text Brightness**: Control feed text brightness
+- **Auto Refresh**: Set automatic feed refresh intervals
 
 ## Development
+
+### Build
+
+```bash
+go build -o newsfornerds ./cmd/srv
+```
+
+Or use the Makefile:
+
+```bash
+make build    # builds to ./srv
+make test     # runs tests
+```
 
 ### Regenerate SQL Code
 
 After modifying `db/queries/*.sql`:
 
 ```bash
+cd db
 go tool github.com/sqlc-dev/sqlc/cmd/sqlc generate
 ```
 
-### Build for Production
+### Run Tests
 
 ```bash
-CGO_ENABLED=0 go build -o newsfornerds ./cmd/srv
+go test ./...
 ```
 
 ## License
