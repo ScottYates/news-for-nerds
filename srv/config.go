@@ -14,7 +14,8 @@ type Config struct {
 	ListenAddr string // LISTEN_ADDR - address to listen on (default ":8000")
 	DBPath     string // DB_PATH - path to SQLite database (default "db.sqlite3")
 	LogFile    string // LOG_FILE - path to log file (default "logs/newsfornerds.log")
-	LogLevel   string // LOG_LEVEL - log level: debug, info, warn, error (default "info")
+	LogLevel       string // LOG_LEVEL - log level: debug, info, warn, error (default "info")
+	CanonicalDomain string // CANONICAL_DOMAIN - if set, redirects requests from other hosts to this domain
 
 	// Google OAuth
 	GoogleClientID     string // GOOGLE_CLIENT_ID
@@ -82,6 +83,7 @@ func LoadConfig(envFile string) (*Config, error) {
 	cfg.DBPath = envOrDefault("DB_PATH", cfg.DBPath)
 	cfg.LogFile = envOrDefault("LOG_FILE", cfg.LogFile)
 	cfg.LogLevel = envOrDefault("LOG_LEVEL", cfg.LogLevel)
+	cfg.CanonicalDomain = envOrDefault("CANONICAL_DOMAIN", cfg.CanonicalDomain)
 
 	cfg.GoogleClientID = envOrDefault("GOOGLE_CLIENT_ID", cfg.GoogleClientID)
 	cfg.GoogleClientSecret = envOrDefault("GOOGLE_CLIENT_SECRET", cfg.GoogleClientSecret)

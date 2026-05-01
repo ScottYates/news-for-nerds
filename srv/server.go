@@ -1089,8 +1089,43 @@ func (s *Server) Serve(addr string) error {
 		"log_file", s.Config.LogFile,
 		"log_level", s.Config.LogLevel,
 		"oauth", s.Config.GoogleClientID != "",
+		"canonical_domain", s.Config.CanonicalDomain,
 		"feed_refresh_min", s.Config.FeedRefreshInterval,
 		"feed_stale_min", s.Config.FeedStaleMinutes,
 	)
-	return http.ListenAndServe(addr, mux)
+
+	var handler http.Handler = mux
+
+	// If a canonical domain is configured, redirect all other hosts to it.
+	if s.Config.CanonicalDomain != "" {
+		canonical := s.Config.CanonicalDomain
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			host := r.Host
+			if fwdHost := r.Header.Get("X-Forwarded-Host"); fwdHost != "" {
+				host = fwdHost
+			}
+			// Strip port for comparison
+			hostNoPort := host
+			if idx := strings.LastIndex(hostNoPort, ":"); idx != -1 {
+				hostNoPort = hostNoPort[:idx]
+			}
+			canonicalNoPort := canonical
+			if idx := strings.LastIndex(canonicalNoPort, ":"); idx != -1 {
+				canonicalNoPort = canonicalNoPort[:idx]
+			}
+			if hostNoPort != canonicalNoPort {
+				scheme := "https"
+				if fwdProto := r.Header.Get("X-Forwarded-Proto"); fwdProto != "" {
+					scheme = fwdProto
+				}
+				target := scheme + "://" + canonical + r.RequestURI
+				slog.Debug("redirecting to canonical domain", "from", host, "to", canonical)
+				http.Redirect(w, r, target, http.StatusMovedPermanently)
+				return
+			}
+			mux.ServeHTTP(w, r)
+		})
+	}
+
+	return http.ListenAndServe(addr, handler)
 }
