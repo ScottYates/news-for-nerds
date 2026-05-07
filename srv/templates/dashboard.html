@@ -4,27 +4,313 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{.Name}} - NewsForNerds</title>
-    <link rel="stylesheet" href="/static/dist/app.css">
-    <link rel="stylesheet" href="/static/style.css?v=9">
+    <link rel="stylesheet" href="/static/style.css?v=8">
     <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png">
 </head>
 <body>
     <div id="app" 
          data-page-id="{{.ID}}" 
-         data-page-name="{{.Name}}"
-         data-bg-color="{{derefString .BgColor}}" 
-         data-bg-image="{{derefString .BgImage}}"
+         data-bg-color="{{.BgColor}}" 
+         data-bg-image="{{.BgImage}}"
          data-config="{{.Config}}"
          data-is-owner="{{.IsOwner}}"
-         data-is-public="{{if .IsPublic}}{{.IsPublic}}{{else}}0{{end}}"
-         data-slug="{{derefString .Slug}}"
-         data-slug-access="{{if .SlugAccess}}{{derefInt64 .SlugAccess}}{{else}}0{{end}}">
-        <!-- Svelte app will mount here -->
-        <div style="display: flex; align-items: center; justify-content: center; height: 100vh; color: #888;">
-            Loading...
+         data-is-public="{{if .IsPublic}}{{.IsPublic}}{{else}}0{{end}}">
+        
+        <!-- Toolbar -->
+        <div id="toolbar">
+            <div class="toolbar-left">
+                <span class="logo">🤓 NewsForNerds</span>
+                <span class="page-name" id="page-name">{{.Name}}</span>
+            </div>
+            <div class="toolbar-right">
+                <button id="btn-add-widget" class="btn btn-primary">+ Add Widget</button>
+                <button id="btn-help" class="btn" title="Keyboard shortcuts (H)">?</button>
+                <button id="btn-settings" class="btn">⚙️ Settings</button>
+                <div id="user-menu" class="user-menu">
+                    <img id="user-avatar" class="user-avatar hidden" src="" alt="">
+                    <button id="btn-login" class="btn hidden">Login</button>
+                </div>
+            </div>
         </div>
+
+        <!-- Widget Container -->
+        <div id="widget-container"></div>
+
+        <!-- Settings Modal -->
+        <div id="settings-modal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Page Settings</h2>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Page Name</label>
+                        <input type="text" id="setting-page-name" value="{{.Name}}">
+                    </div>
+                    <div class="form-group">
+                        <label>Custom URL (optional)</label>
+                        <div class="slug-input-wrapper">
+                            <span class="slug-prefix">/page/</span>
+                            <input type="text" id="setting-slug" value="{{if .Slug}}{{.Slug}}{{end}}" placeholder="my-dashboard">
+                        </div>
+                        <div id="slug-status" class="slug-status"></div>
+                        <small class="form-hint">Letters, numbers, hyphens, and underscores only. Leave empty to use the default URL.</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="setting-is-public" {{if eq (derefInt64 .IsPublic) 1}}checked{{end}}>
+                            Make this page public
+                        </label>
+                        <small class="form-hint">Public pages can be viewed by anyone with the link (read-only for visitors).</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="setting-slug-access" {{if eq (derefInt64 .SlugAccess) 1}}checked{{end}}>
+                            Allow access via custom URL without login
+                        </label>
+                        <small class="form-hint">When enabled, anyone with the custom URL can view this page (read-only) even if not public. Requires a custom URL to be set.</small>
+                    </div>
+                    <div class="form-group">
+                        <label>Background Color</label>
+                        <input type="color" id="setting-bg-color" value="{{.BgColor}}">
+                    </div>
+                    <div class="form-group">
+                        <label>Background Image URL</label>
+                        <input type="text" id="setting-bg-image" value="{{.BgImage}}" placeholder="https://example.com/image.jpg">
+                    </div>
+                    <div class="form-group">
+                        <label>Snap Grid Size (0 = disabled)</label>
+                        <input type="number" id="setting-grid-size" value="0" min="0" max="100" step="5" placeholder="20">
+                    </div>
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="setting-show-grid">
+                            Show grid lines
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label>Widget Header Size</label>
+                        <select id="setting-header-size">
+                            <option value="compact">Compact (32px)</option>
+                            <option value="normal" selected>Normal (44px)</option>
+                            <option value="large">Large (56px)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Feed Item Padding</label>
+                        <select id="setting-item-padding">
+                            <option value="tight">Tight (1px)</option>
+                            <option value="compact">Compact (4px)</option>
+                            <option value="normal" selected>Normal (8px)</option>
+                            <option value="spacious">Spacious (12px)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Text Brightness</label>
+                        <select id="setting-text-brightness">
+                            <option value="dim">Dim (60%)</option>
+                            <option value="soft">Soft (75%)</option>
+                            <option value="normal" selected>Normal (90%)</option>
+                            <option value="bright">Bright (100%)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Auto-Refresh Page</label>
+                        <select id="setting-auto-refresh">
+                            <option value="0" selected>Disabled</option>
+                            <option value="1">Every 1 minute</option>
+                            <option value="5">Every 5 minutes</option>
+                            <option value="10">Every 10 minutes</option>
+                            <option value="15">Every 15 minutes</option>
+                            <option value="30">Every 30 minutes</option>
+                            <option value="60">Every hour</option>
+                            <option value="custom">Custom...</option>
+                        </select>
+                        <div id="custom-refresh-container" class="hidden" style="margin-top: 8px;">
+                            <input type="number" id="setting-auto-refresh-custom" min="1" max="1440" placeholder="Minutes">
+                            <small class="form-hint">Enter refresh interval in minutes (1-1440)</small>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Feed Proxy URL (optional)</label>
+                        <input type="text" id="setting-proxy-url" placeholder="http://proxy.example.com:8080">
+                        <small class="form-hint">HTTP/HTTPS proxy for fetching RSS feeds. Leave empty to connect directly.</small>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group half">
+                            <label>Proxy Username</label>
+                            <input type="text" id="setting-proxy-user" placeholder="username">
+                        </div>
+                        <div class="form-group half">
+                            <label>Proxy Password</label>
+                            <input type="password" id="setting-proxy-pass" placeholder="password">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Import/Export Widgets</label>
+                        <div class="import-export-buttons">
+                            <button id="btn-export-widgets" class="btn">Export Widgets</button>
+                            <button id="btn-import-widgets" class="btn">Import Widgets</button>
+                            <input type="file" id="import-file-input" accept=".json" style="display: none;">
+                        </div>
+                    </div>
+                    <div class="form-group danger-zone">
+                        <label>Danger Zone</label>
+                        <button id="btn-reset-page" class="btn btn-danger">Reset Page</button>
+                        <small class="form-hint">Remove all widgets and reset settings to defaults. This cannot be undone.</small>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="btn-save-settings" class="btn btn-primary">Save</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Widget Config Modal -->
+        <div id="widget-modal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 id="widget-modal-title">Widget Settings</h2>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Widget Type</label>
+                        <select id="widget-type">
+                            <option value="rss">RSS Feed</option>
+                            <option value="iframe">Web Page (iframe)</option>
+                            <option value="html">Custom HTML</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Title</label>
+                        <input type="text" id="widget-title">
+                    </div>
+                    
+                    <!-- RSS-specific options -->
+                    <div id="rss-options">
+                        <div class="form-group">
+                            <label>RSS Feed URL</label>
+                            <input type="text" id="widget-feed-url" placeholder="https://example.com/feed.xml">
+                        </div>
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="widget-show-preview" checked>
+                                Show article previews
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label>Max Items (0 = unlimited)</label>
+                            <input type="number" id="widget-max-items" value="0" min="0" max="100">
+                        </div>
+                    </div>
+                    
+                    <!-- Iframe-specific options -->
+                    <div id="iframe-options" class="hidden">
+                        <div class="form-group">
+                            <label>Page URL</label>
+                            <input type="text" id="widget-iframe-url" placeholder="https://example.com">
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group half">
+                                <label>Horizontal Offset</label>
+                                <input type="number" id="widget-offset-x" value="0" placeholder="0">
+                            </div>
+                            <div class="form-group half">
+                                <label>Vertical Offset</label>
+                                <input type="number" id="widget-offset-y" value="0" placeholder="0">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>CSS Overrides</label>
+                            <textarea id="widget-iframe-css" rows="4" placeholder="body { background: #fff; }&#10;.sidebar { display: none; }"></textarea>
+                        </div>
+                    </div>
+                    
+                    <!-- HTML-specific options -->
+                    <div id="html-options" class="hidden">
+                        <p style="color: #888; font-size: 0.85em; margin-bottom: 15px;">Use the ✏️ button in the widget header to edit content.</p>
+                    </div>
+                    
+                    <!-- Common options -->
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="widget-hide-scrollbars">
+                            Hide scrollbars
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label>Background Color</label>
+                        <input type="color" id="widget-bg-color" value="#16213e">
+                    </div>
+                    <div class="form-group">
+                        <label>Header Color</label>
+                        <input type="color" id="widget-header-color" value="#0f3460">
+                    </div>
+                    <div class="form-group">
+                        <label>Text Color</label>
+                        <input type="color" id="widget-text-color" value="#ffffff">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="btn-delete-widget" class="btn btn-danger">Delete Widget</button>
+                    <button id="btn-save-widget" class="btn btn-primary">Save</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- HTML Editor Modal -->
+        <div id="html-editor-modal" class="modal hidden">
+            <div class="modal-content modal-fullscreen">
+                <div class="modal-header">
+                    <h2>Edit HTML Content</h2>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <div class="modal-body editor-body">
+                    <div class="editor-container">
+                        <textarea id="html-editor-content" placeholder="Enter your content here..."></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="btn-cancel-html" class="btn">Cancel</button>
+                    <button id="btn-save-html" class="btn btn-primary">Save</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Help Overlay -->
+        <div id="help-overlay" class="help-overlay hidden">
+            <div class="help-content">
+                <div class="help-header">
+                    <h2>⌨️ Keyboard Shortcuts</h2>
+                    <button class="help-close">&times;</button>
+                </div>
+                <div class="help-body">
+                    <div class="help-section">
+                        <h3>Widget Actions</h3>
+                        <div class="help-row"><kbd>X</kbd> <span>Mark all items as read (while clicking in widget)</span></div>
+                        <div class="help-row"><kbd>Z</kbd> <span>Mark all items as unread (while clicking in widget)</span></div>
+                    </div>
+                    <div class="help-section">
+                        <h3>Navigation</h3>
+                        <div class="help-row"><kbd>?</kbd> or <kbd>H</kbd> <span>Toggle this help</span></div>
+                        <div class="help-row"><kbd>Esc</kbd> <span>Close dialogs/help</span></div>
+                    </div>
+                    <div class="help-section">
+                        <h3>Widget Editing</h3>
+                        <div class="help-row"><span>🔒/🔓</span> <span>Lock/unlock widget position and size</span></div>
+                        <div class="help-row"><span>⚙️</span> <span>Widget settings</span></div>
+                        <div class="help-row"><span>🔄</span> <span>Refresh feed</span></div>
+                        <div class="help-row"><span>✏️</span> <span>Edit HTML content</span></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
     </div>
+    <button id="toolbar-toggle-fixed" class="toolbar-toggle-fixed" title="Hide toolbar">⬆️</button>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tinymce/6.8.2/tinymce.min.js"></script>
-    <script type="module" src="/static/dist/app.js"></script>
+    <script src="/static/app.js?v=40"></script>
 </body>
 </html>

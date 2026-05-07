@@ -19,7 +19,6 @@ A customizable RSS dashboard for news junkies. Create pages with draggable, resi
 ## Requirements
 
 - Go 1.25+
-- Node.js 18+ (for frontend build)
 - SQLite (embedded via modernc.org/sqlite, no separate install needed)
 - Google OAuth credentials (optional, for persistent accounts)
 
@@ -196,39 +195,15 @@ Export your widget layout as JSON from Settings, and import it on another page o
 ### Build
 
 ```bash
-# Install frontend dependencies (first time only)
-cd frontend && npm install && cd ..
-
-# Build frontend + Go binary
-make build
-```
-
-Or build separately:
-
-```bash
-cd frontend && npm run build   # builds Svelte to srv/static/dist/
 go build -o newsfornerds ./cmd/srv
 ```
 
-```bash
-make build      # builds frontend + Go binary
-make frontend   # builds only frontend
-make test       # runs Go tests
-```
-
-### Frontend Development
-
-For hot-reload during frontend development:
+Or use the Makefile:
 
 ```bash
-# Terminal 1: Run Go backend
-./newsfornerds
-
-# Terminal 2: Run Vite dev server with API proxy
-cd frontend && npm run dev
+make build    # builds to ./srv
+make test     # runs tests
 ```
-
-Vite dev server runs on port 5173 and proxies `/api`, `/auth`, `/static` to the Go backend on port 8000.
 
 ### Regenerate SQL Code
 

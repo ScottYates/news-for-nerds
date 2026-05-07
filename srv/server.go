@@ -1031,12 +1031,6 @@ func (s *Server) renderTemplate(w http.ResponseWriter, name string, data any) er
 			}
 			return *p
 		},
-		"derefString": func(p *string) string {
-			if p == nil {
-				return ""
-			}
-			return *p
-		},
 	}
 	tmpl, err := template.New(name).Funcs(funcMap).ParseFiles(path)
 	if err != nil {

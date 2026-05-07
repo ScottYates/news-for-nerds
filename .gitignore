@@ -18,7 +18,3 @@ newsfornerds
 # Build scripts (local)
 doBuild.sh
 doRestart.sh
-
-# Frontend
-frontend/node_modules/
-frontend/.svelte-kit/
