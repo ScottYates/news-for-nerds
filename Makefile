@@ -1,10 +1,14 @@
-.PHONY: build clean stop start restart test
+.PHONY: build clean test frontend
 
-build:
+build: frontend
 	go build -o newsfornerds ./cmd/srv
+
+frontend:
+	cd frontend && npm run build
 
 clean:
 	rm -f newsfornerds
+	rm -rf srv/static/dist
 
 test:
 	go test ./...
