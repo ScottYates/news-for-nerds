@@ -1,0 +1,181 @@
+package srv
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/PuerkitoBio/goquery"
+	"srv.exe.dev/db/dbgen"
+)
+
+// hnBaseURL is the canonical Hacker News base used for resolving relative links.
+const hnBaseURL = "https://news.ycombinator.com/"
+
+// isHackerNewsURL reports whether the given feed URL points at a Hacker News
+// HTML listing page (e.g. https://news.ycombinator.com/news) that we should
+// scrape directly rather than parse as RSS.
+func isHackerNewsURL(feedURL string) bool {
+	u := strings.ToLower(strings.TrimSpace(feedURL))
+	if !strings.Contains(u, "news.ycombinator.com") {
+		return false
+	}
+	// The actual RSS feed lives at /rss - let gofeed handle that one.
+	if strings.Contains(u, "/rss") {
+		return false
+	}
+	return true
+}
+
+// fetchHackerNews scrapes the Hacker News front-page HTML and returns the page
+// title and parsed story items, formatted to mirror the hckrnews.com widget
+// (title, points, comment count, and source site).
+func (s *Server) fetchHackerNews(ctx context.Context, feedURL string) (string, []FeedItem, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, feedURL, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; NewsForNerds/1.0)")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", nil, fmt.Errorf("hacker news returned status %d", resp.StatusCode)
+	}
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return "", nil, err
+	}
+
+	var items []FeedItem
+
+	// Each story headline lives in a <tr class="athing"> row; the metadata
+	// (points/comments/author) lives in the immediately following sibling row.
+	doc.Find("tr.athing").Each(func(_ int, row *goquery.Selection) {
+		if len(items) >= s.Config.FeedMaxItems {
+			return
+		}
+
+		titleLink := row.Find("span.titleline > a").First()
+		title := strings.TrimSpace(titleLink.Text())
+		if title == "" {
+			return
+		}
+
+		link, _ := titleLink.Attr("href")
+		link = resolveHNLink(link)
+
+		// Source site, e.g. "github.com".
+		site := strings.TrimSpace(row.Find("span.sitestr").First().Text())
+
+		// The subtext row follows the title row.
+		sub := row.Next()
+		points := strings.TrimSpace(sub.Find("span.score").First().Text())
+
+		comments := ""
+		commentLink := ""
+		sub.Find("a").Each(func(_ int, a *goquery.Selection) {
+			t := strings.TrimSpace(a.Text())
+			if strings.Contains(t, "comment") {
+				comments = t
+				if href, ok := a.Attr("href"); ok {
+					commentLink = resolveHNLink(href)
+				}
+			} else if t == "discuss" {
+				comments = "discuss"
+				if href, ok := a.Attr("href"); ok {
+					commentLink = resolveHNLink(href)
+				}
+			}
+		})
+
+		// Build an hckrnews-style description line.
+		var parts []string
+		if points != "" {
+			parts = append(parts, points)
+		}
+		if comments != "" {
+			parts = append(parts, comments)
+		}
+		if site != "" {
+			parts = append(parts, site)
+		}
+		desc := strings.Join(parts, " • ")
+
+		// If the story has no external URL (Ask/Launch HN), fall back to the
+		// HN discussion link so the title is still clickable.
+		if link == "" {
+			link = commentLink
+		}
+
+		items = append(items, FeedItem{
+			Title:       title,
+			Link:        link,
+			Description: desc,
+			Author:      commentLink,
+		})
+	})
+
+	if len(items) == 0 {
+		return "", nil, fmt.Errorf("no hacker news stories parsed (page layout may have changed)")
+	}
+
+	title := strings.TrimSpace(doc.Find("title").First().Text())
+	if title == "" {
+		title = "Hacker News"
+	}
+	return title, items, nil
+}
+
+// resolveHNLink turns a possibly-relative HN href into an absolute URL.
+func resolveHNLink(href string) string {
+	href = strings.TrimSpace(href)
+	if href == "" {
+		return ""
+	}
+	if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
+		return href
+	}
+	return hnBaseURL + strings.TrimPrefix(href, "/")
+}
+
+// fetchAndStoreHackerNews scrapes the HN listing page and stores the result
+// using the same feed cache as RSS feeds, so the existing RSS widget can
+// render it transparently.
+func (s *Server) fetchAndStoreHackerNews(ctx context.Context, feedURL string) {
+	now := time.Now()
+	q := dbgen.New(s.DB)
+
+	title, items, err := s.fetchHackerNews(ctx, feedURL)
+	if err != nil {
+		slog.Warn("failed to scrape hacker news", "url", feedURL, "error", err)
+		errStr := err.Error()
+		_ = q.UpdateFeedError(ctx, dbgen.UpdateFeedErrorParams{
+			LastFetched: &now,
+			LastError:   &errStr,
+			Url:         feedURL,
+		})
+		return
+	}
+
+	content, _ := json.Marshal(items)
+	if err := q.UpsertFeed(ctx, dbgen.UpsertFeedParams{
+		Url:         feedURL,
+		Title:       title,
+		Content:     string(content),
+		LastFetched: &now,
+		LastError:   nil,
+		CreatedAt:   now,
+	}); err != nil {
+		slog.Warn("failed to store hacker news feed", "url", feedURL, "error", err)
+	}
+}

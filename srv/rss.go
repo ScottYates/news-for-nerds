@@ -101,6 +101,12 @@ func (s *Server) fetchAndStoreFeedWithProxy(ctx context.Context, feedURL string,
 // fetchAndStoreFeedWithRetryAndProxy fetches a feed with retry logic and optional proxy.
 // If aggressive is true, retries on all errors (used for new feeds with no cached content).
 func (s *Server) fetchAndStoreFeedWithRetryAndProxy(ctx context.Context, feedURL string, aggressive bool, proxy ProxyConfig) {
+	// Hacker News listing pages are HTML, not RSS - scrape them directly.
+	if isHackerNewsURL(feedURL) {
+		s.fetchAndStoreHackerNews(ctx, feedURL)
+		return
+	}
+
 	parser := gofeed.NewParser()
 	parser.UserAgent = "NewsForNerds/1.0"
 	fetchTimeout := time.Duration(s.Config.FeedFetchTimeout) * time.Second
