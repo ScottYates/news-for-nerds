@@ -1,0 +1,2 @@
+#!/bin/bash
+systemctl status newsfornerds ; journalctl -u newsfornerds -f  # View logs
