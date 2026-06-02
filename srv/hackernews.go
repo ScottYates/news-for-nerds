@@ -81,6 +81,18 @@ func (s *Server) fetchHackerNews(ctx context.Context, feedURL string) (string, [
 		sub := row.Next()
 		points := strings.TrimSpace(sub.Find("span.score").First().Text())
 
+		// Published timestamp lives in the age span's title attribute, e.g.
+		// title="2026-06-02T18:47:07 1780426027".
+		published := ""
+		if ageTitle, ok := sub.Find("span.age").First().Attr("title"); ok {
+			ts := strings.Fields(ageTitle)
+			if len(ts) > 0 {
+				if t, err := time.Parse("2006-01-02T15:04:05", ts[0]); err == nil {
+					published = t.UTC().Format(time.RFC3339)
+				}
+			}
+		}
+
 		comments := ""
 		commentLink := ""
 		sub.Find("a").Each(func(_ int, a *goquery.Selection) {
@@ -122,6 +134,7 @@ func (s *Server) fetchHackerNews(ctx context.Context, feedURL string) (string, [
 			Link:        link,
 			Description: desc,
 			Author:      commentLink,
+			Published:   published,
 		})
 	})
 

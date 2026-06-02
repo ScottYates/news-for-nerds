@@ -234,6 +234,29 @@ body {
     width: 46px;
     font-size: 1em;
 }
+.hn-day {
+    padding: 7px 12px 5px;
+    font-size: 0.72em;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.7;
+    background: rgba(255,255,255,0.06);
+    border-bottom: 1px solid rgba(255,255,255,0.12);
+    position: sticky;
+    top: 0;
+}
+.hn-meta {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: baseline;
+    text-decoration: none;
+    color: inherit;
+    border-radius: 3px;
+}
+.hn-item .hn-meta:hover {
+    background: rgba(255,255,255,0.1);
+}
 .hn-item {
     display: flex;
     align-items: baseline;
@@ -255,14 +278,8 @@ body {
     font-size: 0.8em;
     font-variant-numeric: tabular-nums;
 }
-.hn-col-comments a {
-    color: inherit;
-    text-decoration: none;
-    opacity: 0.6;
-}
-.hn-col-comments a:hover {
-    text-decoration: underline;
-    opacity: 0.9;
+.hn-col-comments {
+    opacity: 0.7;
 }
 .hn-col-points {
     opacity: 0.4;

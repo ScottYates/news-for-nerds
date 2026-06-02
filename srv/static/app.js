@@ -1076,12 +1076,13 @@ class NewsForNerds {
     // discussion (stored in item.author), the title links to the article.
     renderHackerNews(items) {
         const parseNum = (re, str) => { const m = str.match(re); return m ? m[1] : ''; };
-        const rows = items.map(item => {
+
+        // Normalize each item into structured fields.
+        const parsed = items.map(item => {
             const desc = item.description || '';
-            const points = parseNum(/(\d+)\s*points?/i, desc);
-            let comments = parseNum(/(\d+)\s*comments?/i, desc);
-            if (!comments && /discuss/i.test(desc)) comments = '0';
-            // Source site: the part of the description that isn't points/comments.
+            const points = parseInt(parseNum(/(\d+)\s*points?/i, desc), 10);
+            let commentsStr = parseNum(/(\d+)\s*comments?/i, desc);
+            if (!commentsStr && /discuss/i.test(desc)) commentsStr = '0';
             let site = '';
             desc.split('\u2022').forEach(p => {
                 const t = p.trim();
@@ -1089,30 +1090,74 @@ class NewsForNerds {
                     site = t;
                 }
             });
-            const commentLink = item.author || item.link;
-            const visitedClass = this.visitedLinks.has(item.link) ? ' visited' : '';
-            const commentsCell = comments !== ''
-                ? `<a class="hn-comments" href="${this.escapeHtml(commentLink)}" target="_blank" rel="noopener">${this.escapeHtml(comments)}</a>`
+            return {
+                title: item.title,
+                link: item.link,
+                commentLink: item.author || item.link,
+                points: isNaN(points) ? 0 : points,
+                comments: commentsStr,
+                site,
+                published: item.published ? new Date(item.published) : null,
+            };
+        });
+
+        // Group by day (like the original widget), then sort each day's posts
+        // by "top" (points descending). Days themselves are newest-first.
+        const groups = new Map();
+        parsed.forEach(it => {
+            const key = it.published ? it.published.toISOString().slice(0, 10) : 'unknown';
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push(it);
+        });
+        const dayKeys = [...groups.keys()].sort((a, b) => b.localeCompare(a));
+
+        const dayLabel = (key) => {
+            if (key === 'unknown') return '';
+            const d = new Date(key + 'T00:00:00');
+            const today = new Date(); today.setHours(0, 0, 0, 0);
+            const diff = Math.round((today - d) / 86400000);
+            if (diff === 0) return 'Today';
+            if (diff === 1) return 'Yesterday';
+            return d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+        };
+
+        const renderRow = (it) => {
+            const visitedClass = this.visitedLinks.has(it.link) ? ' visited' : '';
+            const siteHtml = it.site
+                ? ` <span class="hn-site">(${this.escapeHtml(it.site)})</span>`
                 : '';
-            const siteHtml = site
-                ? ` <span class="hn-site">(${this.escapeHtml(site)})</span>`
-                : '';
+            // The comments|points block is a single clickable unit linking to
+            // the HN discussion.
             return `
-                <div class="hn-item${visitedClass}" data-link="${this.escapeHtml(item.link)}">
-                    <div class="hn-col hn-col-comments">${commentsCell}</div>
-                    <div class="hn-col hn-col-points">${this.escapeHtml(points)}</div>
+                <div class="hn-item${visitedClass}" data-link="${this.escapeHtml(it.link)}">
+                    <a class="hn-meta" href="${this.escapeHtml(it.commentLink)}" target="_blank" rel="noopener" title="View comments">
+                        <span class="hn-col hn-col-comments">${this.escapeHtml(it.comments)}</span>
+                        <span class="hn-col hn-col-points">${it.points || ''}</span>
+                    </a>
                     <div class="hn-title">
-                        <a href="${this.escapeHtml(item.link)}" target="_blank" rel="noopener">${this.escapeHtml(item.title)}</a>${siteHtml}
+                        <a href="${this.escapeHtml(it.link)}" target="_blank" rel="noopener">${this.escapeHtml(it.title)}</a>${siteHtml}
                     </div>
                 </div>`;
-        }).join('');
-        return `
+        };
+
+        let html = `
             <div class="hn-header">
-                <div class="hn-col hn-col-comments">comments</div>
-                <div class="hn-col hn-col-points">points</div>
+                <a class="hn-meta">
+                    <span class="hn-col hn-col-comments">comments</span>
+                    <span class="hn-col hn-col-points">points</span>
+                </a>
                 <div class="hn-title"></div>
-            </div>
-            ${rows}`;
+            </div>`;
+        dayKeys.forEach(key => {
+            const day = groups.get(key);
+            day.sort((a, b) => b.points - a.points);
+            const label = dayLabel(key);
+            if (label) {
+                html += `<div class="hn-day">${this.escapeHtml(label)}</div>`;
+            }
+            html += day.map(renderRow).join('');
+        });
+        return html;
     }
 
     // Fetch feed directly from the browser and submit to server
