@@ -1150,7 +1150,13 @@ class NewsForNerds {
             </div>`;
         dayKeys.forEach(key => {
             const day = groups.get(key);
-            day.sort((a, b) => b.points - a.points);
+            // Order matches the original hckrnews widget: by submission time,
+            // newest first within each day (NOT by points).
+            day.sort((a, b) => {
+                const ta = a.published ? a.published.getTime() : 0;
+                const tb = b.published ? b.published.getTime() : 0;
+                return tb - ta;
+            });
             const label = dayLabel(key);
             if (label) {
                 html += `<div class="hn-day">${this.escapeHtml(label)}</div>`;
