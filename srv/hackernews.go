@@ -71,6 +71,9 @@ func (s *Server) fetchHackerNews(ctx context.Context, feedURL string) (string, [
 			return
 		}
 
+		// HN story ID (used as a stable key for first-seen tracking).
+		hnID, _ := row.Attr("id")
+
 		link, _ := titleLink.Attr("href")
 		link = resolveHNLink(link)
 
@@ -135,6 +138,7 @@ func (s *Server) fetchHackerNews(ctx context.Context, feedURL string) (string, [
 			Description: desc,
 			Author:      commentLink,
 			Published:   published,
+			ID:          hnID,
 		})
 	})
 
@@ -178,6 +182,30 @@ func (s *Server) fetchAndStoreHackerNews(ctx context.Context, feedURL string) {
 			Url:         feedURL,
 		})
 		return
+	}
+
+	// Replicate hckrnews.com's "sorted by time" ordering: stories are ordered
+	// by when they FIRST appeared on the front page, not their HN submission
+	// time. We track first-seen timestamps locally across refreshes, keyed by
+	// HN story ID, by reading back the previously cached content.
+	firstSeen := map[string]string{}
+	if existing, e := q.GetFeedByURL(ctx, feedURL); e == nil {
+		var prev []FeedItem
+		if json.Unmarshal([]byte(existing.Content), &prev) == nil {
+			for _, p := range prev {
+				if p.ID != "" && p.FirstSeen != "" {
+					firstSeen[p.ID] = p.FirstSeen
+				}
+			}
+		}
+	}
+	nowStr := now.UTC().Format(time.RFC3339)
+	for i := range items {
+		if fs, ok := firstSeen[items[i].ID]; ok {
+			items[i].FirstSeen = fs
+		} else {
+			items[i].FirstSeen = nowStr
+		}
 	}
 
 	content, _ := json.Marshal(items)

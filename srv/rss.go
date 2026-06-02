@@ -19,6 +19,12 @@ type FeedItem struct {
 	Description string `json:"description"`
 	Published   string `json:"published"`
 	Author      string `json:"author"`
+	// ID and FirstSeen are used by the Hacker News scraper to replicate
+	// hckrnews.com's "sorted by time" ordering, which is based on when a
+	// story first appeared on the front page (tracked locally across
+	// refreshes), not its HN submission time.
+	ID        string `json:"id,omitempty"`
+	FirstSeen string `json:"first_seen,omitempty"`
 }
 
 type FeedData struct {

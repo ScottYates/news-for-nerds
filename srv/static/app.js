@@ -1090,6 +1090,10 @@ class NewsForNerds {
                     site = t;
                 }
             });
+            // hckrnews orders "by time" using when a story first appeared on
+            // the front page (first_seen), tracked server-side, NOT the HN
+            // submission time. Fall back to published if first_seen is absent.
+            const orderTime = item.first_seen || item.published;
             return {
                 title: item.title,
                 link: item.link,
@@ -1097,15 +1101,15 @@ class NewsForNerds {
                 points: isNaN(points) ? 0 : points,
                 comments: commentsStr,
                 site,
-                published: item.published ? new Date(item.published) : null,
+                orderTime: orderTime ? new Date(orderTime) : null,
             };
         });
 
-        // Group by day (like the original widget), then sort each day's posts
-        // by "top" (points descending). Days themselves are newest-first.
+        // Group by day, newest day first. Within each day, order by first-seen
+        // time descending (newest at top) to match the original widget.
         const groups = new Map();
         parsed.forEach(it => {
-            const key = it.published ? it.published.toISOString().slice(0, 10) : 'unknown';
+            const key = it.orderTime ? it.orderTime.toISOString().slice(0, 10) : 'unknown';
             if (!groups.has(key)) groups.set(key, []);
             groups.get(key).push(it);
         });
@@ -1150,11 +1154,10 @@ class NewsForNerds {
             </div>`;
         dayKeys.forEach(key => {
             const day = groups.get(key);
-            // Order matches the original hckrnews widget: by submission time,
-            // newest first within each day (NOT by points).
+            // Newest first-seen at the top within each day.
             day.sort((a, b) => {
-                const ta = a.published ? a.published.getTime() : 0;
-                const tb = b.published ? b.published.getTime() : 0;
+                const ta = a.orderTime ? a.orderTime.getTime() : 0;
+                const tb = b.orderTime ? b.orderTime.getTime() : 0;
                 return tb - ta;
             });
             const label = dayLabel(key);
