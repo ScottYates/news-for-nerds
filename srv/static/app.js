@@ -1025,6 +1025,12 @@ class NewsForNerds {
                     items = items.slice(0, maxItems);
                 }
 
+                // Hacker News listing pages get a dedicated hckrnews-style
+                // layout (comments / points columns + muted source site).
+                const isHN = /news\.ycombinator\.com/.test(feedUrl) && !/\/rss/.test(feedUrl);
+                if (isHN) {
+                    body.innerHTML = this.renderHackerNews(items);
+                } else {
                 const compactClass = showPreview ? '' : ' compact';
                 body.innerHTML = items.map(item => {
                     const visitedClass = this.visitedLinks.has(item.link) ? ' visited' : '';
@@ -1039,14 +1045,15 @@ class NewsForNerds {
                         ${showPreview && item.description ? `<div class="feed-item-description">${this.escapeHtml(item.description)}</div>` : ''}
                     </div>
                 `}).join('');
+                }
                 
                 // Add click handlers to mark links as visited
                 // Use mousedown to catch ctrl+click (new tab) and middle-click
-                body.querySelectorAll('.feed-item a').forEach(link => {
+                body.querySelectorAll('.feed-item a, .hn-item a').forEach(link => {
                     link.addEventListener('mousedown', (e) => {
                         // Left click (0) or middle click (1)
                         if (e.button === 0 || e.button === 1) {
-                            const feedItem = link.closest('.feed-item');
+                            const feedItem = link.closest('.feed-item, .hn-item');
                             const url = feedItem.dataset.link;
                             feedItem.classList.add('visited');
                             this.markLinkVisited(url);
@@ -1061,6 +1068,51 @@ class NewsForNerds {
             // Keep showing "Loading..." or previous content - don't show error
             console.warn('Failed to fetch feed:', error);
         }
+    }
+
+    // Render Hacker News items in the hckrnews.com-style two-column layout:
+    // right-aligned comments + points columns, then the title with the source
+    // site shown muted in parentheses. The comment count links to the HN
+    // discussion (stored in item.author), the title links to the article.
+    renderHackerNews(items) {
+        const parseNum = (re, str) => { const m = str.match(re); return m ? m[1] : ''; };
+        const rows = items.map(item => {
+            const desc = item.description || '';
+            const points = parseNum(/(\d+)\s*points?/i, desc);
+            let comments = parseNum(/(\d+)\s*comments?/i, desc);
+            if (!comments && /discuss/i.test(desc)) comments = '0';
+            // Source site: the part of the description that isn't points/comments.
+            let site = '';
+            desc.split('\u2022').forEach(p => {
+                const t = p.trim();
+                if (t && !/points?/i.test(t) && !/comments?/i.test(t) && !/^discuss$/i.test(t)) {
+                    site = t;
+                }
+            });
+            const commentLink = item.author || item.link;
+            const visitedClass = this.visitedLinks.has(item.link) ? ' visited' : '';
+            const commentsCell = comments !== ''
+                ? `<a class="hn-comments" href="${this.escapeHtml(commentLink)}" target="_blank" rel="noopener">${this.escapeHtml(comments)}</a>`
+                : '';
+            const siteHtml = site
+                ? ` <span class="hn-site">(${this.escapeHtml(site)})</span>`
+                : '';
+            return `
+                <div class="hn-item${visitedClass}" data-link="${this.escapeHtml(item.link)}">
+                    <div class="hn-col hn-col-comments">${commentsCell}</div>
+                    <div class="hn-col hn-col-points">${this.escapeHtml(points)}</div>
+                    <div class="hn-title">
+                        <a href="${this.escapeHtml(item.link)}" target="_blank" rel="noopener">${this.escapeHtml(item.title)}</a>${siteHtml}
+                    </div>
+                </div>`;
+        }).join('');
+        return `
+            <div class="hn-header">
+                <div class="hn-col hn-col-comments">comments</div>
+                <div class="hn-col hn-col-points">points</div>
+                <div class="hn-title"></div>
+            </div>
+            ${rows}`;
     }
 
     // Fetch feed directly from the browser and submit to server
