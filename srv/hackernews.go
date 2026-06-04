@@ -88,27 +88,55 @@ func (s *Server) fetchHackerNews(ctx context.Context, feedURL string) (string, [
 	return pageTitle, items, nil
 }
 
+// fetchHNDocument fetches a single HN HTML page, retrying with exponential
+// backoff on HTTP 429 (rate limited). HN aggressively rate-limits rapid
+// multi-page crawls, so we must be patient to paginate reliably.
+func (s *Server) fetchHNDocument(ctx context.Context, pageURL string) (*goquery.Document, error) {
+	const maxAttempts = 4
+	backoff := 2 * time.Second
+
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; NewsForNerds/1.0)")
+
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxAttempts-1 {
+			resp.Body.Close()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+			backoff *= 2
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, fmt.Errorf("hacker news returned status %d", resp.StatusCode)
+		}
+
+		doc, err := goquery.NewDocumentFromReader(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		return doc, nil
+	}
+}
+
 // fetchHackerNewsPage scrapes a single Hacker News listing page and returns the
 // page title, parsed story items, and the absolute URL of the next page ("" if
 // there is no "More" link).
 func (s *Server) fetchHackerNewsPage(ctx context.Context, pageURL string) (string, []FeedItem, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
-	if err != nil {
-		return "", nil, "", err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; NewsForNerds/1.0)")
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return "", nil, "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", nil, "", fmt.Errorf("hacker news returned status %d", resp.StatusCode)
-	}
-
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	doc, err := s.fetchHNDocument(ctx, pageURL)
 	if err != nil {
 		return "", nil, "", err
 	}
@@ -251,9 +279,9 @@ func (s *Server) fetchAndStoreHackerNews(ctx context.Context, feedURL string) {
 	// by when they FIRST appeared on the front page, not their HN submission
 	// time. We track first-seen timestamps locally across refreshes, keyed by
 	// HN story ID, by reading back the previously cached content.
+	var prev []FeedItem
 	firstSeen := map[string]string{}
 	if existing, e := q.GetFeedByURL(ctx, feedURL); e == nil {
-		var prev []FeedItem
 		if json.Unmarshal([]byte(existing.Content), &prev) == nil {
 			for _, p := range prev {
 				if p.ID != "" && p.FirstSeen != "" {
@@ -269,6 +297,29 @@ func (s *Server) fetchAndStoreHackerNews(ctx context.Context, feedURL string) {
 		} else {
 			items[i].FirstSeen = nowStr
 		}
+	}
+
+	// Anti-regression merge: HN rate-limits multi-page crawls, so a refresh may
+	// legitimately scrape fewer pages than last time. Never let the stored list
+	// shrink — carry forward any previously cached stories that this scrape
+	// didn't return, so the widget keeps its accumulated history (matching
+	// hckrnews.com, which retains older stories). Fresh scrapes win on ordering
+	// and metadata; stale entries are appended after.
+	seen := make(map[string]bool, len(items))
+	for _, it := range items {
+		if it.ID != "" {
+			seen[it.ID] = true
+		}
+	}
+	for _, p := range prev {
+		if p.ID == "" || seen[p.ID] {
+			continue
+		}
+		items = append(items, p)
+		seen[p.ID] = true
+	}
+	if len(items) > s.Config.FeedMaxItems {
+		items = items[:s.Config.FeedMaxItems]
 	}
 
 	content, _ := json.Marshal(items)
