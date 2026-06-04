@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -34,26 +35,82 @@ func isHackerNewsURL(feedURL string) bool {
 // fetchHackerNews scrapes the Hacker News front-page HTML and returns the page
 // title and parsed story items, formatted to mirror the hckrnews.com widget
 // (title, points, comment count, and source site).
+//
+// Hacker News only serves 30 stories per page, so to honor a higher item cap
+// we follow the "More" pagination link (?p=2, ?p=3, ...) until we have enough
+// items (FeedMaxItems) or run out of pages. A hard page cap guards against
+// runaway crawls.
 func (s *Server) fetchHackerNews(ctx context.Context, feedURL string) (string, []FeedItem, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, feedURL, nil)
+	const maxPages = 12 // ~360 stories max, plenty for any widget
+
+	var items []FeedItem
+	pageTitle := ""
+	pageURL := feedURL
+
+	for page := 0; page < maxPages; page++ {
+		title, pageItems, next, err := s.fetchHackerNewsPage(ctx, pageURL)
+		if err != nil {
+			// If we already have some items from earlier pages, return those
+			// rather than failing the whole refresh.
+			if len(items) > 0 {
+				break
+			}
+			return "", nil, err
+		}
+		if pageTitle == "" {
+			pageTitle = title
+		}
+		items = append(items, pageItems...)
+		if len(items) >= s.Config.FeedMaxItems {
+			break
+		}
+		if next == "" {
+			break
+		}
+		pageURL = next
+		// Be polite between page requests.
+		select {
+		case <-ctx.Done():
+			return "", nil, ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+
+	if len(items) == 0 {
+		return "", nil, fmt.Errorf("no hacker news stories parsed (page layout may have changed)")
+	}
+	if len(items) > s.Config.FeedMaxItems {
+		items = items[:s.Config.FeedMaxItems]
+	}
+	if pageTitle == "" {
+		pageTitle = "Hacker News"
+	}
+	return pageTitle, items, nil
+}
+
+// fetchHackerNewsPage scrapes a single Hacker News listing page and returns the
+// page title, parsed story items, and the absolute URL of the next page ("" if
+// there is no "More" link).
+func (s *Server) fetchHackerNewsPage(ctx context.Context, pageURL string) (string, []FeedItem, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
 	if err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; NewsForNerds/1.0)")
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", nil, fmt.Errorf("hacker news returned status %d", resp.StatusCode)
+		return "", nil, "", fmt.Errorf("hacker news returned status %d", resp.StatusCode)
 	}
 
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
 
 	var items []FeedItem
@@ -61,10 +118,6 @@ func (s *Server) fetchHackerNews(ctx context.Context, feedURL string) (string, [
 	// Each story headline lives in a <tr class="athing"> row; the metadata
 	// (points/comments/author) lives in the immediately following sibling row.
 	doc.Find("tr.athing").Each(func(_ int, row *goquery.Selection) {
-		if len(items) >= s.Config.FeedMaxItems {
-			return
-		}
-
 		titleLink := row.Find("span.titleline > a").First()
 		title := strings.TrimSpace(titleLink.Text())
 		if title == "" {
@@ -142,15 +195,25 @@ func (s *Server) fetchHackerNews(ctx context.Context, feedURL string) (string, [
 		})
 	})
 
-	if len(items) == 0 {
-		return "", nil, fmt.Errorf("no hacker news stories parsed (page layout may have changed)")
-	}
-
 	title := strings.TrimSpace(doc.Find("title").First().Text())
 	if title == "" {
 		title = "Hacker News"
 	}
-	return title, items, nil
+
+	// Follow the "More" pagination link if present. The href is relative to
+	// the current page (e.g. "?p=2"), so resolve it against pageURL rather than
+	// the site root.
+	next := ""
+	if href, ok := doc.Find("a.morelink").First().Attr("href"); ok {
+		href = strings.TrimSpace(href)
+		if base, perr := url.Parse(pageURL); perr == nil {
+			if ref, rerr := url.Parse(href); rerr == nil {
+				next = base.ResolveReference(ref).String()
+			}
+		}
+	}
+
+	return title, items, next, nil
 }
 
 // resolveHNLink turns a possibly-relative HN href into an absolute URL.

@@ -25,7 +25,7 @@ type Config struct {
 	FeedRefreshInterval int // FEED_REFRESH_INTERVAL - minutes between feed refresh cycles (default 1)
 	FeedStaleMinutes    int // FEED_STALE_MINUTES - minutes before a feed is considered stale (default 5)
 	FeedErrorBackoff    int // FEED_ERROR_BACKOFF - minutes before retrying errored feeds (default 30)
-	FeedMaxItems        int // FEED_MAX_ITEMS - max items to store per feed (default 50)
+	FeedMaxItems        int // FEED_MAX_ITEMS - max items to store per feed (default 300)
 	FeedMaxPerCycle     int // FEED_MAX_PER_CYCLE - max feeds to refresh per cycle (default 5)
 	FeedFetchTimeout    int // FEED_FETCH_TIMEOUT - seconds for feed HTTP requests (default 30)
 
@@ -53,7 +53,7 @@ func DefaultConfig() *Config {
 		FeedRefreshInterval: 1,
 		FeedStaleMinutes:    5,
 		FeedErrorBackoff:    30,
-		FeedMaxItems:        50,
+		FeedMaxItems:        300,
 		FeedMaxPerCycle:     5,
 		FeedFetchTimeout:    30,
 		SessionDurationDays: 30,
