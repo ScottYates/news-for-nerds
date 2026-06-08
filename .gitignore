@@ -18,3 +18,8 @@ newsfornerds
 # Build scripts (local)
 doBuild.sh
 doRestart.sh
+
+# Local test helpers (not part of the shipped binary)
+cmd/flippublic/
+flippublic
+flippublic.exe
