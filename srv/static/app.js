@@ -1070,7 +1070,8 @@ class NewsForNerds {
     // site shown muted in parentheses. The comment count links to the HN
     // discussion (stored in item.author), the title links to the article.
     //
-    // Supports hckrnews-style filters via config.filter ("all" / "top10" /
+    // Supports a configurable minimum-points filter via config.min_points
+    // (default 30). Set to 0 to disable. Only applies to HN feeds.
     // "top20" / "top50pct" / "homepage"). Filters use each story's
     // peak_points (tracked server-side across refreshes), so legendary
     // stories that already decayed still appear in "top 20".
@@ -1128,26 +1129,16 @@ class NewsForNerds {
             };
         });
 
-        // Apply hckrnews-style filter. Thresholds approximate "reached top
-        // N" on HN's leaderboard. The true top-N rank is a moving target
-        // that hckrnews computes from peak rank over time; peak points is
-        // a reasonable proxy for a personal app. Tweak HN_FILTER_THRESHOLDS
-        // below to taste.
-        const HN_FILTER_THRESHOLDS = {
-            top10: 200,    // stories that have ever hit ~top 10 points territory
-            top20: 100,    // stories that have ever hit ~top 20 points territory
-            homepage: 30,  // stories that ever crossed the homepage threshold
-        };
-        const filter = config.filter || 'all';
-        let filtered = parsed;
-        if (HN_FILTER_THRESHOLDS[filter] !== undefined) {
-            const min = HN_FILTER_THRESHOLDS[filter];
-            filtered = parsed.filter(it => it.peak >= min);
-        } else if (filter === 'top50pct') {
-            const sorted = [...parsed].sort((a, b) => b.peak - a.peak);
-            const cutoff = Math.max(1, Math.floor(sorted.length / 2));
-            filtered = sorted.slice(0, cutoff);
-        }
+        // Apply configurable minimum-points filter. Items whose current
+        // points value is below the threshold are hidden. New widgets
+        // default to 30 (filters out the long tail of low-engagement
+        // stories); setting min_points to 0 disables the filter. The
+        // threshold is per-widget so each HN widget can have its own
+        // minimum.
+        const minPoints = Number(config.min_points != null ? config.min_points : 30);
+        const filtered = minPoints > 0
+            ? parsed.filter(it => it.points >= minPoints)
+            : parsed;
 
         // Group by day, newest day first. Within each day, order by
         // first-seen time descending (newest at top) to match the original
@@ -1558,7 +1549,7 @@ class NewsForNerds {
         document.getElementById('widget-feed-url').value = config.feed_url || '';
         document.getElementById('widget-show-preview').checked = config.show_preview !== false;
         document.getElementById('widget-max-items').value = config.max_items || 0;
-        document.getElementById('widget-hn-filter').value = config.filter || 'all';
+        document.getElementById('widget-hn-min-points').value = config.min_points != null ? config.min_points : 30;
         
         // Iframe options
         document.getElementById('widget-iframe-url').value = config.iframe_url || '';
@@ -1615,7 +1606,8 @@ class NewsForNerds {
             config.feed_url = document.getElementById('widget-feed-url').value;
             config.show_preview = document.getElementById('widget-show-preview').checked;
             config.max_items = parseInt(document.getElementById('widget-max-items').value) || 0;
-            config.filter = document.getElementById('widget-hn-filter').value;
+            const minPtsVal = parseInt(document.getElementById('widget-hn-min-points').value, 10);
+            config.min_points = isNaN(minPtsVal) ? 30 : Math.max(0, minPtsVal);
         } else if (widgetType === 'iframe') {
             config.iframe_url = document.getElementById('widget-iframe-url').value;
             config.offset_x = parseInt(document.getElementById('widget-offset-x').value) || 0;
