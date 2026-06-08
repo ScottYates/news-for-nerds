@@ -12,12 +12,29 @@ import (
 	"strings"
 	"time"
 
+	_ "time/tzdata" // embed the IANA tz database so America/Los_Angeles works in minimal builds
+
 	"github.com/PuerkitoBio/goquery"
 	"srv.exe.dev/db/dbgen"
 )
 
 // hnBaseURL is the canonical Hacker News base used for resolving relative links.
 const hnBaseURL = "https://news.ycombinator.com/"
+
+// losAngeles is the IANA timezone Hacker News renders its "age" titles in.
+// Used to disambiguate the naive wall-clock timestamps in HN's HTML
+// (e.g. "2026-06-02T18:47:07"), which carry no zone suffix.
+var losAngeles = func() *time.Location {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		// Fall back to a fixed UTC-7 offset (PDT, no DST handling). The
+		// _ "time/tzdata" import above should make LoadLocation succeed in
+		// minimal builds where /usr/share/zoneinfo isn't present; this is
+		// belt-and-suspenders for environments that strip tzdata anyway.
+		return time.FixedZone("PT", -7*60*60)
+	}
+	return loc
+}()
 
 // isHackerNewsURL reports whether the given feed URL points at a Hacker News
 // HTML listing page (e.g. https://news.ycombinator.com/news) that we should
@@ -168,12 +185,17 @@ func (s *Server) fetchHackerNewsPage(ctx context.Context, pageURL string) (strin
 		points := strings.TrimSpace(sub.Find("span.score").First().Text())
 
 		// Published timestamp lives in the age span's title attribute, e.g.
-		// title="2026-06-02T18:47:07 1780426027".
+		// title="2026-06-02T18:47:07 1780426027". HN renders these in
+		// US/Pacific time without a zone suffix; parsing them as UTC (Go's
+		// default for a naive timestamp) shifts the wall-clock time by 7-8
+		// hours and makes day labels off by one for non-PT viewers. Parse
+		// in PT and convert to UTC for storage so clients in any timezone
+		// see the right local date.
 		published := ""
 		if ageTitle, ok := sub.Find("span.age").First().Attr("title"); ok {
 			ts := strings.Fields(ageTitle)
 			if len(ts) > 0 {
-				if t, err := time.Parse("2006-01-02T15:04:05", ts[0]); err == nil {
+				if t, err := time.ParseInLocation("2006-01-02T15:04:05", ts[0], losAngeles); err == nil {
 					published = t.UTC().Format(time.RFC3339)
 				}
 			}
