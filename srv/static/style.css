@@ -302,6 +302,20 @@ body {
 .hn-item.visited .hn-title a {
     opacity: 0.5;
 }
+.hn-load-more {
+    padding: 10px 12px;
+    text-align: center;
+    font-size: 0.75em;
+    opacity: 0.45;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+.hn-empty {
+    padding: 20px 12px;
+    text-align: center;
+    font-size: 0.85em;
+    opacity: 0.55;
+}
 
 .feed-loading, .feed-error, .feed-empty {
     padding: 20px;

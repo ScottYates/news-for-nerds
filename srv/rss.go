@@ -25,6 +25,15 @@ type FeedItem struct {
 	// refreshes), not its HN submission time.
 	ID        string `json:"id,omitempty"`
 	FirstSeen string `json:"first_seen,omitempty"`
+	// Points / Comments / PeakPoints are populated by the Hacker News
+	// scraper and used by the front-end hckrnews-style filters
+	// (Top 10 / Top 20 / Top 50% / Homepage). PeakPoints is the highest
+	// points value this story has ever had across refreshes — that's
+	// what makes a "reached top 20" story still show in the filter
+	// after its score decays.
+	Points     int    `json:"points,omitempty"`
+	Comments   int    `json:"comments,omitempty"`
+	PeakPoints int    `json:"peak_points,omitempty"`
 }
 
 type FeedData struct {

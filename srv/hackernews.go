@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -207,6 +209,12 @@ func (s *Server) fetchHackerNewsPage(ctx context.Context, pageURL string) (strin
 		}
 		desc := strings.Join(parts, " • ")
 
+		// Parse points / comments as integers for structured filtering
+		// (Top 10 / Top 20 / Top 50% / Homepage) on the client side.
+		pointsNum, _ := strconv.Atoi(leadingInt(points))
+		commentsNum, _ := strconv.Atoi(leadingInt(comments))
+		// "discuss" stories have 0 comments; Atoi above handles that.
+
 		// If the story has no external URL (Ask/Launch HN), fall back to the
 		// HN discussion link so the title is still clickable.
 		if link == "" {
@@ -220,6 +228,8 @@ func (s *Server) fetchHackerNewsPage(ctx context.Context, pageURL string) (strin
 			Author:      commentLink,
 			Published:   published,
 			ID:          hnID,
+			Points:      pointsNum,
+			Comments:    commentsNum,
 		})
 	})
 
@@ -279,13 +289,21 @@ func (s *Server) fetchAndStoreHackerNews(ctx context.Context, feedURL string) {
 	// by when they FIRST appeared on the front page, not their HN submission
 	// time. We track first-seen timestamps locally across refreshes, keyed by
 	// HN story ID, by reading back the previously cached content.
+	//
+	// We also track each story's PeakPoints — the highest points value it's
+	// ever had — so the "Top 10 / Top 20" filters keep showing legendary
+	// stories that hit the front page a while ago and have since decayed.
 	var prev []FeedItem
 	firstSeen := map[string]string{}
+	peakByID := map[string]int{}
 	if existing, e := q.GetFeedByURL(ctx, feedURL); e == nil {
 		if json.Unmarshal([]byte(existing.Content), &prev) == nil {
 			for _, p := range prev {
-				if p.ID != "" && p.FirstSeen != "" {
-					firstSeen[p.ID] = p.FirstSeen
+				if p.ID != "" {
+					if p.FirstSeen != "" {
+						firstSeen[p.ID] = p.FirstSeen
+					}
+					peakByID[p.ID] = p.PeakPoints
 				}
 			}
 		}
@@ -297,6 +315,14 @@ func (s *Server) fetchAndStoreHackerNews(ctx context.Context, feedURL string) {
 		} else {
 			items[i].FirstSeen = nowStr
 		}
+		// Bump the peak if the current scrape shows a higher score than
+		// any previous refresh. This is the local equivalent of hckrnews's
+		// "reached top X" tracking.
+		peak := peakByID[items[i].ID]
+		if items[i].Points > peak {
+			peak = items[i].Points
+		}
+		items[i].PeakPoints = peak
 	}
 
 	// Anti-regression merge: HN rate-limits multi-page crawls, so a refresh may
@@ -311,9 +337,21 @@ func (s *Server) fetchAndStoreHackerNews(ctx context.Context, feedURL string) {
 			seen[it.ID] = true
 		}
 	}
+	pointsFromDesc := regexp.MustCompile(`(\d+)\s*points?`)
 	for _, p := range prev {
 		if p.ID == "" || seen[p.ID] {
 			continue
+		}
+		// Backfill peak_points from the legacy description field for items
+		// cached before the structured Points/PeakPoints fields existed,
+		// so they aren't dropped from the "top N" filters on first refresh
+		// after this code ships.
+		if p.PeakPoints == 0 {
+			if m := pointsFromDesc.FindStringSubmatch(p.Description); len(m) > 1 {
+				if n, err := strconv.Atoi(m[1]); err == nil && n > p.PeakPoints {
+					p.PeakPoints = n
+				}
+			}
 		}
 		items = append(items, p)
 		seen[p.ID] = true
@@ -333,4 +371,18 @@ func (s *Server) fetchAndStoreHackerNews(ctx context.Context, feedURL string) {
 	}); err != nil {
 		slog.Warn("failed to store hacker news feed", "url", feedURL, "error", err)
 	}
+}
+
+// leadingInt pulls the first run of digits out of a string. HN shows
+// points as "123 points" and comments as "45 comments" (or "discuss"
+// for zero-comment Ask/Show HN posts), so this gives us the numbers
+// without dragging in a full regex.
+func leadingInt(s string) string {
+	s = strings.TrimSpace(s)
+	for i, r := range s {
+		if r < '0' || r > '9' {
+			return s[:i]
+		}
+	}
+	return s
 }

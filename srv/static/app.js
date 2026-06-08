@@ -681,6 +681,10 @@ class NewsForNerds {
         // Setup resize
         this.setupResize(el, widget.id);
 
+        // Delegated mousedown tracker for feed/iframe links. Bound once per
+        // body, so it survives infinite-scroll chunk appends.
+        this.setupLinkTracking(el);
+
         // Setup buttons (only for owners)
         const settingsBtn = el.querySelector('.settings-btn');
         if (settingsBtn) {
@@ -729,7 +733,7 @@ class NewsForNerds {
         } else if (widget.widget_type === 'html') {
             this.loadHtmlWidget(widget.id, config);
         } else if (config.feed_url) {
-            this.loadFeed(widget.id, config.feed_url, config.show_preview !== false, config.max_items || 0);
+            this.loadFeed(widget.id, config.feed_url, config.show_preview !== false, config.max_items || 0, config);
             this.loadFavicon(widget.id, config.feed_url);
         } else {
             el.querySelector('.widget-body').innerHTML = `
@@ -961,12 +965,12 @@ class NewsForNerds {
         }
     }
 
-    async loadFeed(widgetId, feedUrl, showPreview = true, maxItems = 0) {
+    async loadFeed(widgetId, feedUrl, showPreview = true, maxItems = 0, widgetConfig = null) {
         const el = document.getElementById(`widget-${widgetId}`);
         const body = el.querySelector('.widget-body');
-        
+
         body.innerHTML = '<div class="feed-loading">Loading feed...</div>';
-        
+
         // Build URL with optional proxy parameters
         let proxyParam = this.proxyUrl ? `&proxy=${encodeURIComponent(this.proxyUrl)}` : '';
         if (this.proxyUrl && this.proxyUser) {
@@ -975,12 +979,12 @@ class NewsForNerds {
                 proxyParam += `&proxy_pass=${encodeURIComponent(this.proxyPass)}`;
             }
         }
-        
+
         // Set a 3-second timeout to force refresh if still loading
         const timeoutId = setTimeout(() => {
             if (body.querySelector('.feed-loading')) {
                 fetch(`/api/feed/refresh?url=${encodeURIComponent(feedUrl)}${proxyParam}`, { method: 'POST' })
-                    .then(() => this.loadFeed(widgetId, feedUrl, showPreview, maxItems))
+                    .then(() => this.loadFeed(widgetId, feedUrl, showPreview, maxItems, widgetConfig))
                     .catch(() => {});
             }
         }, 3000);
@@ -991,7 +995,7 @@ class NewsForNerds {
 
             if (result.success && result.data) {
                 const feed = result.data;
-                
+
                 // If server failed to fetch and asks client to try
                 if (feed.client_fetch_url && (!feed.items || feed.items.length === 0)) {
                     body.innerHTML = '<div class="feed-loading">Server fetch failed, trying from browser...</div>';
@@ -999,24 +1003,24 @@ class NewsForNerds {
                     await this.fetchFeedFromClient(widgetId, feed.client_fetch_url, showPreview, maxItems);
                     return;
                 }
-                
+
                 // If pending or no items, auto-retry after a delay
                 if (!feed.items || feed.items.length === 0) {
                     // Don't clear timeout - let the 5s refresh kick in if needed
                     if (feed.pending) {
                         body.innerHTML = '<div class="feed-loading">Loading feed...</div>';
-                        setTimeout(() => this.loadFeed(widgetId, feedUrl, showPreview, maxItems), 3000);
+                        setTimeout(() => this.loadFeed(widgetId, feedUrl, showPreview, maxItems, widgetConfig), 3000);
                     } else {
                         body.innerHTML = '<div class="feed-loading">Loading feed...</div>';
                         // Try refreshing the feed
                         setTimeout(async () => {
                             await fetch(`/api/feed/refresh?url=${encodeURIComponent(feedUrl)}${proxyParam}`, { method: 'POST' });
-                            this.loadFeed(widgetId, feedUrl, showPreview, maxItems);
+                            this.loadFeed(widgetId, feedUrl, showPreview, maxItems, widgetConfig);
                         }, 2000);
                     }
                     return;
                 }
-                
+
                 // Successfully loaded - clear the timeout
                 clearTimeout(timeoutId);
 
@@ -1026,40 +1030,31 @@ class NewsForNerds {
                 }
 
                 // Hacker News listing pages get a dedicated hckrnews-style
-                // layout (comments / points columns + muted source site).
+                // layout (comments / points columns + muted source site,
+                // Top-N filters via peak points, and infinite scroll).
+                // The non-HN path stays simple: full render.
                 const isHN = /news\.ycombinator\.com/.test(feedUrl) && !/\/rss/.test(feedUrl);
                 if (isHN) {
-                    body.innerHTML = this.renderHackerNews(items);
+                    this.renderHackerNews(body, items, widgetConfig || {});
                 } else {
-                const compactClass = showPreview ? '' : ' compact';
-                body.innerHTML = items.map(item => {
-                    const visitedClass = this.visitedLinks.has(item.link) ? ' visited' : '';
-                    return `
-                    <div class="feed-item${compactClass}${visitedClass}" data-link="${this.escapeHtml(item.link)}">
-                        <div class="feed-item-title">
-                            <a href="${this.escapeHtml(item.link)}" target="_blank" rel="noopener">
-                                ${this.escapeHtml(item.title)}
-                            </a>
+                    const compactClass = showPreview ? '' : ' compact';
+                    body.innerHTML = items.map(item => {
+                        const visitedClass = this.visitedLinks.has(item.link) ? ' visited' : '';
+                        return `
+                        <div class="feed-item${compactClass}${visitedClass}" data-link="${this.escapeHtml(item.link)}">
+                            <div class="feed-item-title">
+                                <a href="${this.escapeHtml(item.link)}" target="_blank" rel="noopener">
+                                    ${this.escapeHtml(item.title)}
+                                </a>
+                            </div>
+                            ${item.published ? `<div class="feed-item-meta">${this.formatDate(item.published)}</div>` : ''}
+                            ${showPreview && item.description ? `<div class="feed-item-description">${this.escapeHtml(item.description)}</div>` : ''}
                         </div>
-                        ${item.published ? `<div class="feed-item-meta">${this.formatDate(item.published)}</div>` : ''}
-                        ${showPreview && item.description ? `<div class="feed-item-description">${this.escapeHtml(item.description)}</div>` : ''}
-                    </div>
-                `}).join('');
+                    `}).join('');
                 }
-                
-                // Add click handlers to mark links as visited
-                // Use mousedown to catch ctrl+click (new tab) and middle-click
-                body.querySelectorAll('.feed-item a, .hn-item a').forEach(link => {
-                    link.addEventListener('mousedown', (e) => {
-                        // Left click (0) or middle click (1)
-                        if (e.button === 0 || e.button === 1) {
-                            const feedItem = link.closest('.feed-item, .hn-item');
-                            const url = feedItem.dataset.link;
-                            feedItem.classList.add('visited');
-                            this.markLinkVisited(url);
-                        }
-                    });
-                });
+                // Link mousedown tracking is delegated from renderWidget's
+                // setupLinkTracking, so it works for items appended later
+                // by infinite-scroll chunks as well as the initial render.
             } else {
                 // Keep showing "Loading..." or previous content - don't show error
                 console.warn('Feed response unsuccessful:', result);
@@ -1074,15 +1069,39 @@ class NewsForNerds {
     // right-aligned comments + points columns, then the title with the source
     // site shown muted in parentheses. The comment count links to the HN
     // discussion (stored in item.author), the title links to the article.
-    renderHackerNews(items) {
+    //
+    // Supports hckrnews-style filters via config.filter ("all" / "top10" /
+    // "top20" / "top50pct" / "homepage"). Filters use each story's
+    // peak_points (tracked server-side across refreshes), so legendary
+    // stories that already decayed still appear in "top 20".
+    //
+    // Also handles infinite scroll: items are rendered in chunks of
+    // HN_PAGE_SIZE; the next chunk is appended as the widget body scrolls
+    // near the bottom. Day-group headers are inserted exactly once at the
+    // top of each day, regardless of where chunk boundaries fall.
+    renderHackerNews(body, items, config = {}) {
+        const HN_PAGE_SIZE = 30;
         const parseNum = (re, str) => { const m = str.match(re); return m ? m[1] : ''; };
 
-        // Normalize each item into structured fields.
+        // Normalize each item into structured fields. Prefer the structured
+        // points/comments populated by the server-side scraper; fall back
+        // to parsing the legacy description string for items cached before
+        // the structured fields were added.
         const parsed = items.map(item => {
             const desc = item.description || '';
-            const points = parseInt(parseNum(/(\d+)\s*points?/i, desc), 10);
-            let commentsStr = parseNum(/(\d+)\s*comments?/i, desc);
-            if (!commentsStr && /discuss/i.test(desc)) commentsStr = '0';
+            let points;
+            if (item.points != null && item.points !== '') {
+                points = Number(item.points);
+            } else {
+                points = parseInt(parseNum(/(\d+)\s*points?/i, desc), 10);
+            }
+            let comments;
+            if (item.comments != null && item.comments !== '') {
+                comments = Number(item.comments);
+            } else {
+                const m = desc.match(/(\d+)\s*comments?/i);
+                comments = m ? parseInt(m[1], 10) : (/discuss/i.test(desc) ? 0 : 0);
+            }
             let site = '';
             desc.split('\u2022').forEach(p => {
                 const t = p.trim();
@@ -1094,27 +1113,63 @@ class NewsForNerds {
             // the front page (first_seen), tracked server-side, NOT the HN
             // submission time. Fall back to published if first_seen is absent.
             const orderTime = item.first_seen || item.published;
+            // Peak is what drives the top-N filters. Falls back to current
+            // points if peak_points is missing (e.g. legacy cache).
+            const peak = Number(item.peak_points || item.points || 0);
             return {
                 title: item.title,
                 link: item.link,
                 commentLink: item.author || item.link,
                 points: isNaN(points) ? 0 : points,
-                comments: commentsStr,
+                comments: isNaN(comments) ? 0 : comments,
                 site,
                 orderTime: orderTime ? new Date(orderTime) : null,
+                peak,
             };
         });
 
-        // Group by day, newest day first. Within each day, order by first-seen
-        // time descending (newest at top) to match the original widget.
+        // Apply hckrnews-style filter. Thresholds approximate "reached top
+        // N" on HN's leaderboard. The true top-N rank is a moving target
+        // that hckrnews computes from peak rank over time; peak points is
+        // a reasonable proxy for a personal app. Tweak HN_FILTER_THRESHOLDS
+        // below to taste.
+        const HN_FILTER_THRESHOLDS = {
+            top10: 200,    // stories that have ever hit ~top 10 points territory
+            top20: 100,    // stories that have ever hit ~top 20 points territory
+            homepage: 30,  // stories that ever crossed the homepage threshold
+        };
+        const filter = config.filter || 'all';
+        let filtered = parsed;
+        if (HN_FILTER_THRESHOLDS[filter] !== undefined) {
+            const min = HN_FILTER_THRESHOLDS[filter];
+            filtered = parsed.filter(it => it.peak >= min);
+        } else if (filter === 'top50pct') {
+            const sorted = [...parsed].sort((a, b) => b.peak - a.peak);
+            const cutoff = Math.max(1, Math.floor(sorted.length / 2));
+            filtered = sorted.slice(0, cutoff);
+        }
+
+        // Group by day, newest day first. Within each day, order by
+        // first-seen time descending (newest at top) to match the original
+        // widget.
         const groups = new Map();
-        parsed.forEach(it => {
+        filtered.forEach(it => {
             const key = it.orderTime ? it.orderTime.toISOString().slice(0, 10) : 'unknown';
             if (!groups.has(key)) groups.set(key, []);
             groups.get(key).push(it);
         });
         const dayKeys = [...groups.keys()].sort((a, b) => b.localeCompare(a));
+        dayKeys.forEach(key => {
+            const day = groups.get(key);
+            day.sort((a, b) => {
+                const ta = a.orderTime ? a.orderTime.getTime() : 0;
+                const tb = b.orderTime ? b.orderTime.getTime() : 0;
+                return tb - ta;
+            });
+        });
 
+        // Flatten into a sequence of (day-header, item, item, ...) so the
+        // chunk renderer can append slices without losing day boundaries.
         const dayLabel = (key) => {
             if (key === 'unknown') return '';
             const d = new Date(key + 'T00:00:00');
@@ -1124,6 +1179,12 @@ class NewsForNerds {
             if (diff === 1) return 'Yesterday';
             return d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
         };
+        const flat = [];
+        dayKeys.forEach(key => {
+            const label = dayLabel(key);
+            if (label) flat.push({ type: 'day', label });
+            groups.get(key).forEach(it => flat.push({ type: 'item', it }));
+        });
 
         const renderRow = (it) => {
             const visitedClass = this.visitedLinks.has(it.link) ? ' visited' : '';
@@ -1135,7 +1196,7 @@ class NewsForNerds {
             return `
                 <div class="hn-item${visitedClass}" data-link="${this.escapeHtml(it.link)}">
                     <a class="hn-meta" href="${this.escapeHtml(it.commentLink)}" target="_blank" rel="noopener" title="View comments">
-                        <span class="hn-col hn-col-comments">${this.escapeHtml(it.comments)}</span>
+                        <span class="hn-col hn-col-comments">${it.comments || ''}</span>
                         <span class="hn-col hn-col-points">${it.points || ''}</span>
                     </a>
                     <div class="hn-title">
@@ -1144,29 +1205,92 @@ class NewsForNerds {
                 </div>`;
         };
 
-        let html = `
+        // Render header + list placeholder. Day-group headers are emitted
+        // inline as the chunk renderer crosses into a new day.
+        body.innerHTML = `
             <div class="hn-header">
                 <a class="hn-meta">
                     <span class="hn-col hn-col-comments">comments</span>
                     <span class="hn-col hn-col-points">points</span>
                 </a>
                 <div class="hn-title"></div>
-            </div>`;
-        dayKeys.forEach(key => {
-            const day = groups.get(key);
-            // Newest first-seen at the top within each day.
-            day.sort((a, b) => {
-                const ta = a.orderTime ? a.orderTime.getTime() : 0;
-                const tb = b.orderTime ? b.orderTime.getTime() : 0;
-                return tb - ta;
-            });
-            const label = dayLabel(key);
-            if (label) {
-                html += `<div class="hn-day">${this.escapeHtml(label)}</div>`;
+            </div>
+            <div class="hn-list"></div>
+            <div class="hn-load-more" style="display: none;">Loading more…</div>
+        `;
+        const list = body.querySelector('.hn-list');
+        const sentinel = body.querySelector('.hn-load-more');
+
+        // Empty state: no items after filter.
+        if (flat.length === 0) {
+            list.innerHTML = '<div class="hn-empty">No stories match this filter.</div>';
+            return;
+        }
+
+        let cursor = 0;
+        const renderChunk = () => {
+            const next = flat.slice(cursor, cursor + HN_PAGE_SIZE);
+            if (next.length === 0) {
+                sentinel.style.display = 'none';
+                body.removeEventListener('scroll', onScroll);
+                return;
             }
-            html += day.map(renderRow).join('');
+            let html = '';
+            next.forEach(entry => {
+                if (entry.type === 'day') {
+                    html += `<div class="hn-day">${this.escapeHtml(entry.label)}</div>`;
+                } else {
+                    html += renderRow(entry.it);
+                }
+            });
+            list.insertAdjacentHTML('beforeend', html);
+            cursor += next.length;
+            if (cursor >= flat.length) {
+                sentinel.style.display = 'none';
+                body.removeEventListener('scroll', onScroll);
+            } else {
+                sentinel.style.display = '';
+            }
+        };
+
+        const onScroll = () => {
+            // Pre-buffer: when within 200px of the bottom, render the next
+            // chunk. requestAnimationFrame avoids layout thrash on rapid
+            // scroll events.
+            if (body.scrollTop + body.clientHeight >= body.scrollHeight - 200) {
+                if (!renderChunk._pending) {
+                    renderChunk._pending = true;
+                    requestAnimationFrame(() => {
+                        renderChunk._pending = false;
+                        renderChunk();
+                    });
+                }
+            }
+        };
+
+        renderChunk();
+        body.addEventListener('scroll', onScroll);
+    }
+
+    // Delegated mousedown handler for any link inside .feed-item or .hn-item.
+    // Attached once per widget body (from renderWidget's setupLinkTracking)
+    // so it catches links appended later by infinite scroll, and we don't
+    // have to re-bind on every refresh.
+    setupLinkTracking(widgetEl) {
+        const body = widgetEl.querySelector('.widget-body');
+        if (!body || body._linkTrackingBound) return;
+        body._linkTrackingBound = true;
+        body.addEventListener('mousedown', (e) => {
+            if (e.button !== 0 && e.button !== 1) return;
+            const link = e.target.closest('.feed-item a, .hn-item a');
+            if (!link) return;
+            const item = link.closest('.feed-item, .hn-item');
+            if (!item) return;
+            const url = item.dataset.link;
+            if (!url) return;
+            item.classList.add('visited');
+            this.markLinkVisited(url);
         });
-        return html;
     }
 
     // Fetch feed directly from the browser and submit to server
@@ -1411,11 +1535,11 @@ class NewsForNerds {
             await fetch(`/api/feed/refresh?url=${encodeURIComponent(config.feed_url)}${proxyParam}`, {
                 method: 'POST'
             });
-            await this.loadFeed(widgetId, config.feed_url, config.show_preview !== false, config.max_items || 0);
+            await this.loadFeed(widgetId, config.feed_url, config.show_preview !== false, config.max_items || 0, config);
         } catch (error) {
             // Keep previous content, just log the error
             console.warn('Failed to refresh feed:', error);
-            await this.loadFeed(widgetId, config.feed_url, config.show_preview !== false, config.max_items || 0);
+            await this.loadFeed(widgetId, config.feed_url, config.show_preview !== false, config.max_items || 0, config);
         }
     }
 
@@ -1434,6 +1558,7 @@ class NewsForNerds {
         document.getElementById('widget-feed-url').value = config.feed_url || '';
         document.getElementById('widget-show-preview').checked = config.show_preview !== false;
         document.getElementById('widget-max-items').value = config.max_items || 0;
+        document.getElementById('widget-hn-filter').value = config.filter || 'all';
         
         // Iframe options
         document.getElementById('widget-iframe-url').value = config.iframe_url || '';
@@ -1490,6 +1615,7 @@ class NewsForNerds {
             config.feed_url = document.getElementById('widget-feed-url').value;
             config.show_preview = document.getElementById('widget-show-preview').checked;
             config.max_items = parseInt(document.getElementById('widget-max-items').value) || 0;
+            config.filter = document.getElementById('widget-hn-filter').value;
         } else if (widgetType === 'iframe') {
             config.iframe_url = document.getElementById('widget-iframe-url').value;
             config.offset_x = parseInt(document.getElementById('widget-offset-x').value) || 0;

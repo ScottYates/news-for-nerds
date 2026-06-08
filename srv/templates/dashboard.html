@@ -204,6 +204,17 @@
                             <label>Max Items (0 = unlimited)</label>
                             <input type="number" id="widget-max-items" value="0" min="0" max="100">
                         </div>
+                        <div class="form-group" id="hn-filter-row">
+                            <label>Hacker News Filter</label>
+                            <select id="widget-hn-filter">
+                                <option value="all">All stories</option>
+                                <option value="top10">Top 10 (peak rank)</option>
+                                <option value="top20">Top 20 (peak rank)</option>
+                                <option value="top50pct">Top 50%</option>
+                                <option value="homepage">Homepage</option>
+                            </select>
+                            <small class="form-hint">hckrnews-style: stories are kept if they ever reached the top of the leaderboard by peak points. Applies to news.ycombinator.com feeds only.</small>
+                        </div>
                     </div>
                     
                     <!-- Iframe-specific options -->
