@@ -22,6 +22,13 @@ func TestServerStartup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
+	// Close the DB before the test framework tries to remove the temp file.
+	// On Windows an open SQLite file can't be unlinked, so without this the
+	// t.Cleanup(os.Remove) above and t.TempDir's RemoveAll both fail.
+	// Registered after the os.Remove cleanup so t.Cleanup's LIFO order runs
+	// DB.Close first.
+	t.Cleanup(func() { server.DB.Close() })
+
 	if server.DB == nil {
 		t.Fatal("expected DB to be initialized")
 	}
@@ -35,6 +42,7 @@ func TestRootRedirects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
+	t.Cleanup(func() { server.DB.Close() })
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
