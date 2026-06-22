@@ -59,12 +59,18 @@ func isHackerNewsURL(feedURL string) bool {
 // we follow the "More" pagination link (?p=2, ?p=3, ...) until we have enough
 // items (FeedMaxItems) or run out of pages. A hard page cap guards against
 // runaway crawls.
+//
+// HN's front page is ranked live, so a story can straddle a page boundary
+// between consecutive paginated fetches (e.g. a story that was rank 30 on
+// page 1 is now rank 31 on page 2). Without dedup the same story would show
+// up twice in the widget. We dedup by HN story ID as we accumulate items.
 func (s *Server) fetchHackerNews(ctx context.Context, feedURL string) (string, []FeedItem, error) {
 	const maxPages = 12 // ~360 stories max, plenty for any widget
 
 	var items []FeedItem
 	pageTitle := ""
 	pageURL := feedURL
+	seen := make(map[string]bool) // HN IDs already collected across pages
 
 	for page := 0; page < maxPages; page++ {
 		title, pageItems, next, err := s.fetchHackerNewsPage(ctx, pageURL)
@@ -79,7 +85,18 @@ func (s *Server) fetchHackerNews(ctx context.Context, feedURL string) (string, [
 		if pageTitle == "" {
 			pageTitle = title
 		}
-		items = append(items, pageItems...)
+		for _, it := range pageItems {
+			// Skip IDs we've already collected. Rows with no ID (parses
+			// gone wrong / malformed HTML) are kept as-is — they're rare
+			// and at worst harmless.
+			if it.ID != "" {
+				if seen[it.ID] {
+					continue
+				}
+				seen[it.ID] = true
+			}
+			items = append(items, it)
+		}
 		if len(items) >= s.Config.FeedMaxItems {
 			break
 		}
@@ -320,6 +337,12 @@ func (s *Server) fetchAndStoreHackerNews(ctx context.Context, feedURL string) {
 	peakByID := map[string]int{}
 	if existing, e := q.GetFeedByURL(ctx, feedURL); e == nil {
 		if json.Unmarshal([]byte(existing.Content), &prev) == nil {
+			// Defensive dedup: if any prior run left duplicate IDs in the
+			// cached JSON (e.g. from before pagination-overlap dedup was
+			// added), collapse them here so the anti-regression merge
+			// below starts from a clean list. First occurrence wins,
+			// preserving original ordering.
+			prev = dedupByID(prev)
 			for _, p := range prev {
 				if p.ID != "" {
 					if p.FirstSeen != "" {
@@ -407,4 +430,31 @@ func leadingInt(s string) string {
 		}
 	}
 	return s
+}
+
+// dedupByID returns items with duplicate IDs collapsed, keeping the
+// first occurrence and preserving original order. Items with an empty
+// ID are passed through unchanged (HN rows always have IDs; an empty
+// ID signals a parse failure we don't want to silently merge).
+//
+// Used by the HN scraper to defend against front-page rank churn that
+// can put the same story on two consecutive paginated fetches, and to
+// clean up any duplicate entries that older versions of the scraper
+// may have persisted into the feed cache.
+func dedupByID(items []FeedItem) []FeedItem {
+	if len(items) < 2 {
+		return items
+	}
+	seen := make(map[string]bool, len(items))
+	out := make([]FeedItem, 0, len(items))
+	for _, it := range items {
+		if it.ID != "" {
+			if seen[it.ID] {
+				continue
+			}
+			seen[it.ID] = true
+		}
+		out = append(out, it)
+	}
+	return out
 }
