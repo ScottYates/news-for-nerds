@@ -358,8 +358,16 @@ func stripHTML(s string) string {
 }
 
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	if maxLen <= 0 {
+		return ""
+	}
+	// Count runes, not bytes. The old version used len(s) <= maxLen and
+	// s[:maxLen] which are byte-based — descriptions with non-ASCII text
+	// (CJK, emoji, accented Latin) would get sliced mid-rune and ship
+	// invalid UTF-8 to the client, which rendered as replacement chars.
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return string(runes[:maxLen]) + "\u2026" // U+2026 HORIZONTAL ELLIPSIS
 }
