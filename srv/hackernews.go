@@ -261,9 +261,14 @@ func (s *Server) fetchHackerNewsPage(ctx context.Context, pageURL string) (strin
 		}
 
 		items = append(items, FeedItem{
-			Title:       title,
+			// goquery's .Text() usually decodes HTML entities already,
+			// but we run decodeFeedEntities defensively in case a future
+			// scrape path changes (e.g. reading attr/title), or in case
+			// a title text node was double-encoded. Idempotent on clean
+			// text.
+			Title:       decodeFeedEntities(title),
 			Link:        link,
-			Description: desc,
+			Description: decodeFeedEntities(desc),
 			Author:      commentLink,
 			Published:   published,
 			ID:          hnID,
@@ -407,8 +412,11 @@ func (s *Server) fetchAndStoreHackerNews(ctx context.Context, feedURL string) {
 
 	content, _ := json.Marshal(items)
 	if err := q.UpsertFeed(ctx, dbgen.UpsertFeedParams{
-		Url:         feedURL,
-		Title:       title,
+		Url: feedURL,
+		// Decode HTML entities in the HN page title defensively (the
+		// <title> tag is unusual but if it ever had entities they'd
+		// leak through goquery's text-only extraction).
+		Title:       decodeFeedEntities(title),
 		Content:     string(content),
 		LastFetched: &now,
 		LastError:   nil,

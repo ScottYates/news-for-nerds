@@ -210,9 +210,12 @@ func (s *Server) fetchAndStoreFeedWithRetryAndProxy(ctx context.Context, feedURL
 			break
 		}
 		fi := FeedItem{
-			Title:       item.Title,
+			// Decode HTML entities up front so titles/descriptions reach
+			// the UI as real Unicode (e.g. "Sony's next-gen" instead of
+			// "Sony&#8217;s next-gen"). Idempotent on already-clean text.
+			Title:       decodeFeedEntities(item.Title),
 			Link:        item.Link,
-			Description: truncate(stripHTML(item.Description), 300),
+			Description: truncate(stripHTML(decodeFeedEntities(item.Description)), 300),
 		}
 		if item.PublishedParsed != nil {
 			fi.Published = item.PublishedParsed.Format(time.RFC3339)
@@ -220,7 +223,7 @@ func (s *Server) fetchAndStoreFeedWithRetryAndProxy(ctx context.Context, feedURL
 			fi.Published = item.Published
 		}
 		if item.Author != nil {
-			fi.Author = item.Author.Name
+			fi.Author = decodeFeedEntities(item.Author.Name)
 		}
 		items = append(items, fi)
 	}
@@ -228,8 +231,10 @@ func (s *Server) fetchAndStoreFeedWithRetryAndProxy(ctx context.Context, feedURL
 	content, _ := json.Marshal(items)
 
 	err = q.UpsertFeed(ctx, dbgen.UpsertFeedParams{
-		Url:         feedURL,
-		Title:       feed.Title,
+		Url: feedURL,
+		// Feed-level title (channel/Atom feed title) gets the same
+		// treatment for the same reasons.
+		Title:       decodeFeedEntities(feed.Title),
 		Content:     string(content),
 		LastFetched: &now,
 		LastError:   nil,
@@ -307,12 +312,24 @@ func (s *Server) StoreFeedFromClient(ctx context.Context, feedURL, title string,
 		return err
 	}
 
+	// Decode entities on every item coming from the client-side fetcher
+	// for the same reason the server-side fetcher does it — the browser
+	// parses XML with the DOMParser which leaves raw entity strings in
+	// .textContent when the entity was double-encoded by the feed author.
+	for i := range items {
+		items[i].Title = decodeFeedEntities(items[i].Title)
+		items[i].Description = decodeFeedEntities(items[i].Description)
+		items[i].Author = decodeFeedEntities(items[i].Author)
+	}
+
 	now := time.Now()
 	content, _ := json.Marshal(items)
 
 	err = q.UpsertFeed(ctx, dbgen.UpsertFeedParams{
-		Url:         feedURL,
-		Title:       title,
+		Url: feedURL,
+		// Same treatment for the feed-level title to keep it consistent
+		// with the server-side fetch path.
+		Title:       decodeFeedEntities(title),
 		Content:     string(content),
 		LastFetched: &now,
 		LastError:   nil, // Clear any previous error
