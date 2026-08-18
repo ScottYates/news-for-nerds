@@ -112,6 +112,7 @@ func TestSecurityHeaders_CSPAllowsProxyAndInline(t *testing.T) {
 		"frame-src *",
 		"object-src 'none'",
 		"base-uri 'self'",
+		"https://cdnjs.cloudflare.com", // TinyMCE editor
 		"form-action 'self'",
 	}
 	for _, want := range mustContain {

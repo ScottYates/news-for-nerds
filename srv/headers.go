@@ -15,9 +15,12 @@ import (
 //
 //   - Content-Security-Policy:
 //       default-src 'self';
-//       script-src 'self' 'unsafe-inline';  // proxy-injected inline script
+//       script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com;
+//                                          // TinyMCE editor
 //       style-src  'self' 'unsafe-inline';  // per-widget inline styles
 //       img-src    'self' data:;            // data: URLs for favicons
+//       font-src   'self' https://cdnjs.cloudflare.com;
+//                                          // TinyMCE fonts
 //       frame-src  *;                      // widget iframes (proxy + user iframes)
 //       connect-src 'self';
 //       object-src 'none';
@@ -39,9 +42,10 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 		h := w.Header()
 		setIfMissing(h, "Content-Security-Policy",
 			"default-src 'self'; "+
-				"script-src 'self' 'unsafe-inline'; "+
+				"script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "+
 				"style-src 'self' 'unsafe-inline'; "+
 				"img-src 'self' data:; "+
+				"font-src 'self' https://cdnjs.cloudflare.com; "+
 				"frame-src *; "+
 				"connect-src 'self'; "+
 				"object-src 'none'; "+

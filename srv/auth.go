@@ -44,6 +44,21 @@ func generateState() string {
 	return base64.URLEncoding.EncodeToString(b)
 }
 
+// requestIsSecure reports whether the given request was received
+// over HTTPS, directly (r.TLS != nil) or via a TLS-terminating proxy
+// (X-Forwarded-Proto: https). Used to set the Secure flag on
+// authentication cookies correctly for both localhost-HTTP dev
+// and HTTPS production behind a reverse proxy.
+func requestIsSecure(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		return true
+	}
+	return false
+}
+
 func (s *Server) getRedirectURI(r *http.Request) string {
 	scheme := "https"
 	host := r.Host
@@ -93,7 +108,7 @@ func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		Domain:   s.getCookieDomain(r),
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   requestIsSecure(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   600, // 10 minutes
 	})
@@ -113,7 +128,7 @@ func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 			Path:     "/",
 			Domain:   s.getCookieDomain(r),
 			HttpOnly: true,
-			Secure:   true,
+			Secure:   requestIsSecure(r),
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   600, // 10 minutes
 		})
@@ -291,7 +306,7 @@ func (s *Server) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		Domain:   s.getCookieDomain(r),
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   requestIsSecure(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   s.Config.SessionDurationDays * 86400,
 	})
@@ -450,7 +465,7 @@ func (s *Server) GetOrCreateVisitorID(w http.ResponseWriter, r *http.Request) st
 		Path:     "/",
 		Domain:   s.getCookieDomain(r),
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   requestIsSecure(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   s.Config.VisitorDurationDays * 86400,
 	})
@@ -510,3 +525,4 @@ func (s *Server) HandleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		"oauth_enabled": s.Config.GoogleClientID != "",
 	})
 }
+
