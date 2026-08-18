@@ -92,7 +92,7 @@ class NewsForNerds {
     
     async loadVisitedLinks() {
         try {
-            const response = await fetch('/api/visited');
+            const response = await this.fetchWithCSRF('/api/visited');
             const result = await response.json();
             if (result.success && result.data) {
                 this.visitedLinks = new Set(result.data);
@@ -107,7 +107,7 @@ class NewsForNerds {
         this.visitedLinks.add(url);
         
         try {
-            await fetch('/api/visited', {
+            await this.fetchWithCSRF('/api/visited', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ url })
@@ -418,7 +418,7 @@ class NewsForNerds {
             
             slugCheckTimeout = setTimeout(async () => {
                 try {
-                    const response = await fetch(`/api/pages/${this.pageId}/check-slug?slug=${encodeURIComponent(slug)}`);
+                    const response = await this.fetchWithCSRF(`/api/pages/${this.pageId}/check-slug?slug=${encodeURIComponent(slug)}`);
                     const result = await response.json();
                     
                     if (result.success && result.data) {
@@ -480,7 +480,7 @@ class NewsForNerds {
         // Send all to server
         for (const url of urls) {
             try {
-                await fetch('/api/visited', {
+                await this.fetchWithCSRF('/api/visited', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ url })
@@ -542,7 +542,7 @@ class NewsForNerds {
         
         // Send all to server to unmark
         try {
-            await fetch('/api/visited', {
+            await this.fetchWithCSRF('/api/visited', {
                 method: 'DELETE',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ urls })
@@ -562,7 +562,7 @@ class NewsForNerds {
 
     async loadWidgets() {
         try {
-            const response = await fetch(`/api/pages/${this.pageId}/widgets`);
+            const response = await this.fetchWithCSRF(`/api/pages/${this.pageId}/widgets`);
             const result = await response.json();
             
             if (result.success && result.data) {
@@ -579,7 +579,7 @@ class NewsForNerds {
 
     async createWidget() {
         try {
-            const response = await fetch(`/api/pages/${this.pageId}/widgets`, {
+            const response = await this.fetchWithCSRF(`/api/pages/${this.pageId}/widgets`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -746,7 +746,7 @@ class NewsForNerds {
         if (!url) return;
         
         try {
-            const response = await fetch(`/api/favicon?url=${encodeURIComponent(url)}`);
+            const response = await this.fetchWithCSRF(`/api/favicon?url=${encodeURIComponent(url)}`);
             const result = await response.json();
             
             if (result.success && result.data) {
@@ -941,7 +941,7 @@ class NewsForNerds {
 
     async updateWidgetPosition(widgetId, x, y) {
         try {
-            await fetch(`/api/widgets/${widgetId}`, {
+            await this.fetchWithCSRF(`/api/widgets/${widgetId}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ pos_x: Math.round(x), pos_y: Math.round(y) })
@@ -954,7 +954,7 @@ class NewsForNerds {
 
     async updateWidgetSize(widgetId, width, height) {
         try {
-            await fetch(`/api/widgets/${widgetId}`, {
+            await this.fetchWithCSRF(`/api/widgets/${widgetId}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ width: Math.round(width), height: Math.round(height) })
@@ -990,7 +990,7 @@ class NewsForNerds {
         }, 3000);
 
         try {
-            const response = await fetch(`/api/feed?url=${encodeURIComponent(feedUrl)}${proxyParam}`);
+            const response = await this.fetchWithCSRF(`/api/feed?url=${encodeURIComponent(feedUrl)}${proxyParam}`);
             const result = await response.json();
 
             if (result.success && result.data) {
@@ -1014,7 +1014,7 @@ class NewsForNerds {
                         body.innerHTML = '<div class="feed-loading">Loading feed...</div>';
                         // Try refreshing the feed
                         setTimeout(async () => {
-                            await fetch(`/api/feed/refresh?url=${encodeURIComponent(feedUrl)}${proxyParam}`, { method: 'POST' });
+                            await this.fetchWithCSRF(`/api/feed/refresh?url=${encodeURIComponent(feedUrl)}${proxyParam}`, { method: 'POST' });
                             this.loadFeed(widgetId, feedUrl, showPreview, maxItems, widgetConfig);
                         }, 2000);
                     }
@@ -1291,7 +1291,7 @@ class NewsForNerds {
 
         try {
             // Fetch the feed XML directly from the browser
-            const response = await fetch(feedUrl);
+            const response = await this.fetchWithCSRF(feedUrl);
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
             }
@@ -1367,7 +1367,7 @@ class NewsForNerds {
             }
             
             // Submit to server for caching
-            await fetch('/api/feed/submit', {
+            await this.fetchWithCSRF('/api/feed/submit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1446,7 +1446,7 @@ class NewsForNerds {
         config.locked = !config.locked;
         
         try {
-            const response = await fetch(`/api/widgets/${widgetId}`, {
+            const response = await this.fetchWithCSRF(`/api/widgets/${widgetId}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
@@ -1523,7 +1523,7 @@ class NewsForNerds {
                     proxyParam += `&proxy_pass=${encodeURIComponent(this.proxyPass)}`;
                 }
             }
-            await fetch(`/api/feed/refresh?url=${encodeURIComponent(config.feed_url)}${proxyParam}`, {
+            await this.fetchWithCSRF(`/api/feed/refresh?url=${encodeURIComponent(config.feed_url)}${proxyParam}`, {
                 method: 'POST'
             });
             await this.loadFeed(widgetId, config.feed_url, config.show_preview !== false, config.max_items || 0, config);
@@ -1618,7 +1618,7 @@ class NewsForNerds {
         }
 
         try {
-            const response = await fetch(`/api/widgets/${this.editingWidgetId}`, {
+            const response = await this.fetchWithCSRF(`/api/widgets/${this.editingWidgetId}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1647,7 +1647,7 @@ class NewsForNerds {
         if (!confirm('Are you sure you want to delete this widget?')) return;
 
         try {
-            await fetch(`/api/widgets/${this.editingWidgetId}`, {
+            await this.fetchWithCSRF(`/api/widgets/${this.editingWidgetId}`, {
                 method: 'DELETE'
             });
 
@@ -1734,7 +1734,7 @@ class NewsForNerds {
         });
 
         try {
-            const response = await fetch(`/api/pages/${this.pageId}`, {
+            const response = await this.fetchWithCSRF(`/api/pages/${this.pageId}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1853,7 +1853,7 @@ class NewsForNerds {
         config.html_content = content;
         
         try {
-            const response = await fetch(`/api/widgets/${this.editingWidgetId}`, {
+            const response = await this.fetchWithCSRF(`/api/widgets/${this.editingWidgetId}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1934,7 +1934,7 @@ class NewsForNerds {
                 toolbar_collapsed: collapsed,
                 auto_refresh: this.autoRefresh
             });
-            await fetch(`/api/pages/${this.pageId}`, {
+            await this.fetchWithCSRF(`/api/pages/${this.pageId}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ config })
@@ -2026,7 +2026,7 @@ class NewsForNerds {
                 page_settings: hasSettings ? data.page_settings : undefined
             };
 
-            const response = await fetch(`/api/pages/${this.pageId}/import`, {
+            const response = await this.fetchWithCSRF(`/api/pages/${this.pageId}/import`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -2109,7 +2109,7 @@ class NewsForNerds {
             // Delete all widgets
             const widgetIds = Array.from(this.widgets.keys());
             for (const widgetId of widgetIds) {
-                await fetch(`/api/widgets/${widgetId}`, { method: 'DELETE' });
+                await this.fetchWithCSRF(`/api/widgets/${widgetId}`, { method: 'DELETE' });
                 const el = document.getElementById(`widget-${widgetId}`);
                 if (el) el.remove();
             }
@@ -2129,7 +2129,7 @@ class NewsForNerds {
                 proxy_pass: ''
             });
             
-            await fetch(`/api/pages/${this.pageId}`, {
+            await this.fetchWithCSRF(`/api/pages/${this.pageId}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -2193,6 +2193,35 @@ class NewsForNerds {
         }
     }
 
+    // fetchWithCSRF wraps fetch() and adds the X-CSRF-Token header
+    // to state-changing requests (POST, PUT, PATCH, DELETE), as
+    // required by the CSRF double-submit middleware on the server.
+    //
+    // The csrf token lives in a JS-readable cookie. We read it on
+    // every call and echo it in a custom header. Without this, every
+    // state-changing request would 403.
+    async fetchWithCSRF(url, options = {}) {
+        const method = (options.method || 'GET').toUpperCase();
+        const isStateChange = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
+        if (isStateChange) {
+            const token = this.getCookie('csrf');
+            if (!token) {
+                // The csrf cookie hasn't been issued yet (e.g. the
+                // user opened a deep link to a JSON API). Surface a
+                // clear error instead of a confusing 403.
+                throw new Error('csrf token missing; please reload the page');
+            }
+            options.headers = options.headers || {};
+            options.headers['X-CSRF-Token'] = token;
+        }
+        return fetch(url, options);
+    }
+
+    getCookie(name) {
+        const match = document.cookie.match(new RegExp('(^|;)\\s*' + name + '=([^;]+)'));
+        return match ? decodeURIComponent(match[2]) : '';
+    }
+
     escapeHtml(str) {
         if (!str) return '';
         const div = document.createElement('div');
@@ -2202,7 +2231,7 @@ class NewsForNerds {
 
     async checkAuthStatus() {
         try {
-            const response = await fetch('/api/auth/status');
+            const response = await this.fetchWithCSRF('/api/auth/status');
             const data = await response.json();
             
             const loginBtn = document.getElementById('btn-login');
@@ -2332,3 +2361,4 @@ class NewsForNerds {
 document.addEventListener('DOMContentLoaded', () => {
     window.newsForNerds = new NewsForNerds();
 });
+

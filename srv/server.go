@@ -1171,9 +1171,39 @@ func (s *Server) Serve(addr string) error {
 
 	var handler http.Handler = mux
 
+	// Wrap with security middleware. Order matters: CSRF and security
+	// headers run on requests that pass the canonical-domain check
+	// (i.e. on-host requests). The canonical-domain wrapper goes
+	// outermost so off-host requests redirect without being touched
+	// by the rest of the stack.
+	handler = securityHeadersMiddleware(handler)
+	handler = csrfMiddleware(
+		[]string{"/auth/", "/api/proxy"},
+		// The CSRF cookie's Secure flag follows the request: set when
+		// the request came in over TLS (r.TLS != nil) or when a
+		// trusted reverse proxy reports X-Forwarded-Proto: https.
+		// This lets the same binary serve localhost dev (HTTP, no
+		// Secure) and production behind a TLS proxy (HTTPS, Secure).
+		func(r *http.Request) bool {
+			if r.TLS != nil {
+				return true
+			}
+			if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+				return true
+			}
+			return false
+		},
+		s.getCookieDomain,
+		handler,
+	)
+
 	// If a canonical domain is configured, redirect all other hosts to it.
+	// Wrap the existing handler (with security headers + CSRF) so the
+	// entire stack runs on on-host requests; off-host requests redirect
+	// without being touched by anything else.
 	if s.Config.CanonicalDomain != "" {
 		canonical := s.Config.CanonicalDomain
+		inner := handler
 		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			host := r.Host
 			if fwdHost := r.Header.Get("X-Forwarded-Host"); fwdHost != "" {
@@ -1198,7 +1228,7 @@ func (s *Server) Serve(addr string) error {
 				http.Redirect(w, r, target, http.StatusMovedPermanently)
 				return
 			}
-			mux.ServeHTTP(w, r)
+			inner.ServeHTTP(w, r)
 		})
 	}
 
