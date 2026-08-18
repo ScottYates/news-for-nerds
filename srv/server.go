@@ -112,14 +112,19 @@ func New(cfg *Config, hostname string) (*Server, error) {
 		Hostname:     hostname,
 		TemplatesDir: filepath.Join(baseDir, "templates"),
 		StaticDir:    filepath.Join(baseDir, "static"),
+		// Outbound httpClient and proxyClient both use a transport
+		// hardened against SSRF: the DialContext rejects loopback,
+		// link-local, private, and cloud-metadata IP ranges, and pins
+		// to the first resolved IP to defeat DNS rebinding.
 		httpClient: &http.Client{
-			Timeout: time.Duration(cfg.FeedFetchTimeout) * time.Second,
+			Timeout:   time.Duration(cfg.FeedFetchTimeout) * time.Second,
+			Transport: safeTransport(nil),
 		},
 		proxyClient: &http.Client{
 			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
+			Transport: safeTransport(&http.Transport{
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
+			}),
 		},
 	}
 	if err := srv.setUpDatabase(cfg.DBPath); err != nil {
@@ -681,6 +686,13 @@ func (s *Server) HandleAPIGetFeed(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "url required"})
 		return
 	}
+	// Reject SSRF: don't let a user point us at localhost, a private
+	// network, or a cloud metadata service via the feed URL. The
+	// transport's DialContext enforces this again on the connect itself.
+	if err := validateOutboundURL(feedURL); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid url: " + err.Error()})
+		return
+	}
 	proxy := ProxyConfig{
 		URL:      r.URL.Query().Get("proxy"),
 		Username: r.URL.Query().Get("proxy_user"),
@@ -700,6 +712,10 @@ func (s *Server) HandleAPIRefreshFeed(w http.ResponseWriter, r *http.Request) {
 	feedURL := r.URL.Query().Get("url")
 	if feedURL == "" {
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "url required"})
+		return
+	}
+	if err := validateOutboundURL(feedURL); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid url: " + err.Error()})
 		return
 	}
 	proxy := ProxyConfig{
@@ -740,6 +756,14 @@ func (s *Server) HandleAPISubmitFeed(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "url required"})
 		return
 	}
+	// Validate the URL the client is submitting, even though we won't
+	// refetch it server-side. We persist the URL and may refresh it
+	// later via the background ticker, so the same SSRF protection
+	// applies.
+	if err := validateOutboundURL(input.URL); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid url: " + err.Error()})
+		return
+	}
 
 	// Store the feed data
 	err := s.StoreFeedFromClient(r.Context(), input.URL, input.Title, input.Items)
@@ -762,6 +786,14 @@ func (s *Server) HandleAPIGetFavicon(w http.ResponseWriter, r *http.Request) {
 	url := r.URL.Query().Get("url")
 	if url == "" {
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "url required"})
+		return
+	}
+	// Reject SSRF — same deny list as the proxy. The favicon fetcher
+	// derives URLs from the feed's host and tries several well-known
+	// paths, so a malicious feed URL pointing at a metadata service
+	// would otherwise be probed.
+	if err := validateOutboundURL(url); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid url: " + err.Error()})
 		return
 	}
 

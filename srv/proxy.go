@@ -18,9 +18,17 @@ func (s *Server) HandleAPIProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	customCSS := r.URL.Query().Get("css")
 
-	// Validate URL
+	// Reject URLs that point at internal/cloud-metadata services before
+	// we even try to fetch them. The transport's DialContext also
+	// enforces this on the actual connect (and pins to the first
+	// resolved IP to defeat DNS rebinding), so a hostname that flips
+	// to a private IP between here and the dial is still blocked.
+	if err := validateOutboundURL(targetURL); err != nil {
+		http.Error(w, "invalid url: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 	parsed, err := url.Parse(targetURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+	if err != nil {
 		http.Error(w, "invalid url", http.StatusBadRequest)
 		return
 	}
