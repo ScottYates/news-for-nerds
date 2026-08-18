@@ -74,8 +74,14 @@ func (s *Server) HandleAPIProxy(w http.ResponseWriter, r *http.Request) {
 		// Build injection: <base target="_blank">, visited link styling, and optional custom CSS
 		injection := `<base target="_blank">`
 		injection += `<style>.nfn-visited, .nfn-visited * { color: #666 !important; opacity: 0.6; }</style>`
-		if customCSS != "" {
-			injection += `<style>` + customCSS + `</style>`
+		// Sanitize user-supplied CSS: any input containing "</" or an
+		// HTML-comment marker could break out of the <style> block and
+		// inject HTML/JS into the proxy response. The proxy is served
+		// from the app's origin and is loaded into a same-origin
+		// iframe, so a successful breakout is a full XSS. safeCustomCSS
+		// rejects anything that could escape the style context.
+		if css := safeCustomCSS(customCSS); css != "" {
+			injection += `<style>` + css + `</style>`
 		}
 		// Inject script to request visited links from parent and mark them
 		injection += `<script>

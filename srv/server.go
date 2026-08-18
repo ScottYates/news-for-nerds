@@ -304,7 +304,12 @@ func (s *Server) HandleAPICreateWidget(w http.ResponseWriter, r *http.Request) {
 		HeaderColor string `json:"header_color"`
 		Config      string `json:"config"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	if err := decodeJSONBody(w, r, &input); err != nil {
+		// decodeJSONBody has already written a 413 response when the
+		// body overflows the cap; only emit 400 for genuine parse errors.
+		if _, ok := err.(*http.MaxBytesError); ok {
+			return
+		}
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid json"})
 		return
 	}
@@ -394,7 +399,12 @@ func (s *Server) HandleAPIUpdateWidget(w http.ResponseWriter, r *http.Request) {
 		HeaderColor *string `json:"header_color"`
 		Config      *string `json:"config"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	if err := decodeJSONBody(w, r, &input); err != nil {
+		// decodeJSONBody has already written a 413 response when the
+		// body overflows the cap; only emit 400 for genuine parse errors.
+		if _, ok := err.(*http.MaxBytesError); ok {
+			return
+		}
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid json"})
 		return
 	}
@@ -513,7 +523,12 @@ func (s *Server) HandleAPIImportWidgets(w http.ResponseWriter, r *http.Request) 
 		} `json:"widgets"`
 		PageSettings *json.RawMessage `json:"page_settings"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	if err := decodeJSONBody(w, r, &input); err != nil {
+		// decodeJSONBody has already written a 413 response when the
+		// body overflows the cap; only emit 400 for genuine parse errors.
+		if _, ok := err.(*http.MaxBytesError); ok {
+			return
+		}
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid json"})
 		return
 	}
@@ -747,7 +762,12 @@ func (s *Server) HandleAPISubmitFeed(w http.ResponseWriter, r *http.Request) {
 		Title string     `json:"title"`
 		Items []FeedItem `json:"items"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	if err := decodeJSONBody(w, r, &input); err != nil {
+		// decodeJSONBody has already written a 413 response when the
+		// body overflows the cap; only emit 400 for genuine parse errors.
+		if _, ok := err.(*http.MaxBytesError); ok {
+			return
+		}
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid json"})
 		return
 	}
@@ -812,7 +832,12 @@ func (s *Server) HandleAPIMarkVisited(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		URL string `json:"url"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	if err := decodeJSONBody(w, r, &input); err != nil {
+		// decodeJSONBody has already written a 413 response when the
+		// body overflows the cap; only emit 400 for genuine parse errors.
+		if _, ok := err.(*http.MaxBytesError); ok {
+			return
+		}
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid json"})
 		return
 	}
@@ -859,7 +884,12 @@ func (s *Server) HandleAPIUnmarkVisited(w http.ResponseWriter, r *http.Request) 
 	var input struct {
 		URLs []string `json:"urls"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	if err := decodeJSONBody(w, r, &input); err != nil {
+		// decodeJSONBody has already written a 413 response when the
+		// body overflows the cap; only emit 400 for genuine parse errors.
+		if _, ok := err.(*http.MaxBytesError); ok {
+			return
+		}
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid json"})
 		return
 	}
@@ -898,7 +928,12 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 		IsPublic   *bool   `json:"is_public"`
 		SlugAccess *bool   `json:"slug_access"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	if err := decodeJSONBody(w, r, &input); err != nil {
+		// decodeJSONBody has already written a 413 response when the
+		// body overflows the cap; only emit 400 for genuine parse errors.
+		if _, ok := err.(*http.MaxBytesError); ok {
+			return
+		}
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid json"})
 		return
 	}

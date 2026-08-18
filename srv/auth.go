@@ -98,10 +98,13 @@ func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   600, // 10 minutes
 	})
 
-	// Store return URL to redirect back after login
-	returnURL := r.URL.Query().Get("return")
+	// Store return URL to redirect back after login. Whitelist to
+	// same-origin relative paths so a hostile `return` query (or a
+	// malicious Referer set by an attacker page) can't bounce the
+	// user off-site after a successful sign-in (open redirect).
+	returnURL := safeReturnPath(r.URL.Query().Get("return"))
 	if returnURL == "" {
-		returnURL = r.Referer()
+		returnURL = safeReturnPath(r.Referer())
 	}
 	if returnURL != "" {
 		http.SetCookie(w, &http.Cookie{
@@ -293,10 +296,16 @@ func (s *Server) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   s.Config.SessionDurationDays * 86400,
 	})
 
-	// Redirect to return URL if set, otherwise home
+	// Redirect to return URL if set, otherwise home. The cookie value
+	// was validated at issue time in HandleLogin, but we re-validate
+	// here in case the cookie was tampered with (cookies are
+	// user-controlled on the client) or in case a future code path
+	// sets the cookie without going through HandleLogin.
 	returnURL := "/"
 	if returnCookie, err := r.Cookie("oauth_return"); err == nil && returnCookie.Value != "" {
-		returnURL = returnCookie.Value
+		if safe := safeReturnPath(returnCookie.Value); safe != "" {
+			returnURL = safe
+		}
 		// Clear the return cookie
 		http.SetCookie(w, &http.Cookie{
 			Name:   "oauth_return",
