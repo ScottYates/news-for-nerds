@@ -19,7 +19,9 @@ browser via Playwright. Tests cover:
 
 Each scenario is independent; failures don't stop the rest.
 """
+import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -55,8 +57,23 @@ class Harness:
         self.tmpdir = Path(tempfile.mkdtemp(prefix="nfn-int-"))
         self.db = self.tmpdir / "test.sqlite3"
         self.log = self.tmpdir / "server.log"
+        # Where scenario screenshots land. We surface the latest run
+        # by clearing this directory on harness start; per-scenario
+        # PNGs are written here by the test functions.
+        self.screens = self.tmpdir / "screens"
+        self.screens.mkdir(parents=True, exist_ok=True)
+        self.saved_screens: list[Path] = []  # files referenced by the user
         self.proc: Optional[subprocess.Popen] = None
         self.results: list[tuple[str, str, str]] = []  # (name, status, detail)
+
+    def shot(self, page, name: str) -> Path:
+        """Take a screenshot of the current page state and return the
+        path. The path is also recorded so the test runner can
+        surface it as a media deliverable after the run."""
+        path = self.screens / f"{name}.png"
+        page.screenshot(path=str(path), full_page=True)
+        self.saved_screens.append(path)
+        return path
 
     def start(self):
         env = os.environ.copy()
@@ -548,6 +565,122 @@ def test_html_widget_render(p: Playwright, h: Harness):
         browser.close()
 
 
+def test_import_widgets(p: Playwright, h: Harness):
+    """Drive the existing /api/pages/{id}/import endpoint through the
+    real browser using the testdata/widgets-import.json file (an
+    export from the production app: 18 widgets, 1 HTML, 17 RSS, plus
+    page_settings). Verify the import succeeds, the page is fully
+    rendered, and capture screenshots before and after."""
+    name = "import-widgets"
+    import_path = Path(__file__).parent / "testdata" / "widgets-import.json"
+    if not import_path.exists():
+        return h.report(
+            name, "FAIL", f"import file not found at {import_path}"
+        )
+    expected_titles = {w["title"] for w in json.loads(import_path.read_text())["widgets"]}
+    expected_n = len(expected_titles)
+
+    browser = p.chromium.launch()
+    try:
+        ctx = browser.new_context()
+        page = ctx.new_page()
+        # Auto-accept the confirm() dialog that the import flow shows.
+        page.on("dialog", lambda d: d.accept())
+
+        # Create a page via API.
+        r = ctx.request.get(f"{h.base}/", max_redirects=0)
+        page.goto(f"{h.base}{r.headers['location']}", wait_until="domcontentloaded")
+        page.wait_for_function("window.newsForNerds !== undefined", timeout=5000)
+        page_id = page.evaluate("() => document.getElementById('app').dataset.pageId")
+
+        # Screenshot: empty page before import.
+        h.shot(page, "01-before-import")
+
+        # Upload the import file via the existing hidden file input.
+        # Playwright's set_input_files fires the change event, which
+        # triggers the existing importWidgets() handler.
+        page.set_input_files("#import-file-input", str(import_path))
+
+        # Wait for the import to complete. The JS adds widgets to the
+        # app's internal map, so we poll that.
+        page.wait_for_function(
+            f"() => window.newsForNerds && window.newsForNerds.widgets.size >= {expected_n}",
+            timeout=15000,
+        )
+
+        # Wait for widget DOM to settle. Give the layout a moment.
+        page.wait_for_function(
+            f"() => document.querySelectorAll('.widget').length >= {expected_n}",
+            timeout=5000,
+        )
+        page.wait_for_timeout(500)  # let layout/fonts settle for the screenshot
+
+        # Verify all expected titles are present in the DOM.
+        rendered_titles = page.evaluate(
+            """() => {
+                const els = document.querySelectorAll('.widget-title');
+                return Array.from(els).map(e => e.textContent.trim());
+            }"""
+        )
+        missing = expected_titles - set(rendered_titles)
+        if missing:
+            return h.report(
+                name, "FAIL",
+                f"{len(missing)} widgets missing from DOM: "
+                f"{sorted(missing)[:5]}...",
+            )
+
+        # Screenshot: full dashboard after import.
+        h.shot(page, "02-after-import")
+
+        # Screenshot: a single-widget close-up. The Hacker News widget
+        # is the most interesting visually (hckrnews-style layout).
+        hn = page.evaluate(
+            """() => {
+                const els = Array.from(document.querySelectorAll('.widget'));
+                const hn = els.find(e => /Hacker News/i.test(e.textContent));
+                if (!hn) return null;
+                hn.scrollIntoView({block: 'center'});
+                const r = hn.getBoundingClientRect();
+                return {x: r.x, y: r.y, w: r.width, h: r.height};
+            }"""
+        )
+        if hn:
+            page.wait_for_timeout(200)
+            closeup = h.screens / "03-hn-closeup.png"
+            page.screenshot(
+                path=str(closeup),
+                clip={
+                    "x": max(0, hn["x"] - 8),
+                    "y": max(0, hn["y"] - 8),
+                    "width": hn["w"] + 16,
+                    "height": hn["h"] + 16,
+                },
+            )
+            h.saved_screens.append(closeup)
+
+        # Verify the server-side state: the page has 18 widgets and
+        # the import endpoint would return them. We use the API path
+        # to check (bypasses the rendered DOM).
+        api = ctx.request.get(f"{h.base}/api/pages/{page_id}/widgets")
+        if api.status != 200:
+            return h.report(name, "FAIL", f"api widgets: {api.status}")
+        api_widgets = api.json()["data"]
+        if len(api_widgets) != expected_n:
+            return h.report(
+                name, "FAIL",
+                f"expected {expected_n} widgets in API, got {len(api_widgets)}",
+            )
+
+        ctx.close()
+        h.report(
+            name, "PASS",
+            f"{len(rendered_titles)} widgets rendered, all expected titles present",
+        )
+    finally:
+        browser.close()
+
+
 def test_visited_links(h: Harness, ctx: BrowserContext):
     """POST /api/visited then GET /api/visited returns the entry."""
     name = "visited-links"
@@ -685,6 +818,7 @@ def main():
                 test_csrf_full_browser_flow(p, h)
                 test_hn_widget_in_browser(p, h)
                 test_html_widget_render(p, h)
+                test_import_widgets(p, h)
             finally:
                 browser.close()
     finally:
@@ -698,6 +832,23 @@ def main():
         f"\n=== {n_pass}/{total} pass, {n_warn} warn, {n_fail} fail ===",
         flush=True,
     )
+
+    # Copy screenshots to a stable repo-local location (gitignored)
+    # so the user can browse them after the run. The most useful
+    # ones are the before/after/closeup from the import scenario.
+    if h.saved_screens:
+        stable = Path(__file__).parent / "screenshots"
+        stable.mkdir(parents=True, exist_ok=True)
+        for src in h.saved_screens:
+            dst = stable / src.name
+            shutil.copyfile(src, dst)
+        print(
+            f"\nScreenshots copied to: {stable}",
+            flush=True,
+        )
+        for s in h.saved_screens:
+            print(f"  - {s}", flush=True)
+
     if h.log.exists():
         # Surface the last few server log lines on failure.
         if n_fail:
