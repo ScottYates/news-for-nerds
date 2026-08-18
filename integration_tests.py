@@ -59,9 +59,15 @@ class Harness:
         self.log = self.tmpdir / "server.log"
         # Where scenario screenshots land. We surface the latest run
         # by clearing this directory on harness start; per-scenario
-        # PNGs are written here by the test functions.
+        # PNGs are written here by the test functions. The stable
+        # repo-local copy at <repo>/screenshots/ is also cleared so
+        # the previous run's leftovers don't ship with the new run.
         self.screens = self.tmpdir / "screens"
         self.screens.mkdir(parents=True, exist_ok=True)
+        stable = Path(__file__).parent / "screenshots"
+        if stable.exists():
+            for old in stable.glob("*.png"):
+                old.unlink()
         self.saved_screens: list[Path] = []  # files referenced by the user
         self.proc: Optional[subprocess.Popen] = None
         self.results: list[tuple[str, str, str]] = []  # (name, status, detail)
@@ -613,7 +619,62 @@ def test_import_widgets(p: Playwright, h: Harness):
             f"() => document.querySelectorAll('.widget').length >= {expected_n}",
             timeout=5000,
         )
-        page.wait_for_timeout(500)  # let layout/fonts settle for the screenshot
+
+        # Wait for feeds to populate. Each RSS widget fires its own
+        # /api/feed fetch on render; with 17 RSS feeds hitting real
+        # public servers, this can take 5-10s total. We poll until
+        # at least 14 of 18 widgets have a populated body (i.e. not
+        # the .feed-loading placeholder) — that's a threshold that
+        # lets slow feeds fail without blocking the screenshot.
+        # The 3s timeout in the JS triggers a server-side refresh
+        # attempt on stuck feeds, so we give it up to ~20s before
+        # giving up.
+        try:
+            page.wait_for_function(
+                """() => {
+                    const ws = document.querySelectorAll('.widget');
+                    if (ws.length < 18) return false;
+                    let populated = 0;
+                    for (const w of ws) {
+                        const body = w.querySelector('.widget-body');
+                        if (!body) continue;
+                        // Populated = has any feed-item, hn-item, or
+                        // html-content child (i.e. not just the
+                        // .feed-loading placeholder, and not the
+                        // .feed-empty error state).
+                        if (body.querySelector('.feed-item, .hn-item, .html-content')) {
+                            populated++;
+                        }
+                    }
+                    return populated >= 14;
+                }""",
+                timeout=30000,
+            )
+        except Exception:
+            # Soft fail: just proceed. The screenshot will show
+            # whatever state the feeds are in. We log how many
+            # actually populated.
+            pass
+
+        # Count actually-populated widgets for reporting.
+        populated = page.evaluate(
+            """() => {
+                const ws = document.querySelectorAll('.widget');
+                let n = 0;
+                for (const w of ws) {
+                    const body = w.querySelector('.widget-body');
+                    if (body && body.querySelector('.feed-item, .hn-item, .html-content')) n++;
+                }
+                return n;
+            }"""
+        )
+
+        # Scroll to top so the screenshot shows the dashboard from
+        # the top, not the scrolled-to-bottom default after import.
+        page.evaluate("() => window.scrollTo(0, 0)")
+        # One more beat to let the scroll settle and the layout
+        # finish reflowing before capturing.
+        page.wait_for_timeout(800)
 
         # Verify all expected titles are present in the DOM.
         rendered_titles = page.evaluate(
@@ -630,31 +691,42 @@ def test_import_widgets(p: Playwright, h: Harness):
                 f"{sorted(missing)[:5]}...",
             )
 
-        # Screenshot: full dashboard after import.
+        # Screenshot: full dashboard after import (feeds populated).
         h.shot(page, "02-after-import")
 
-        # Screenshot: a single-widget close-up. The Hacker News widget
-        # is the most interesting visually (hckrnews-style layout).
-        hn = page.evaluate(
+        # Screenshot: a single-widget close-up. Pick a populated
+        # widget (one with feed-items in its body) so the closeup
+        # shows real content, not "Loading feed...". Hacker News
+        # is preferred for the hckrnews-style layout, but we'll fall
+        # back to any populated widget if HN hasn't loaded.
+        target = page.evaluate(
             """() => {
                 const els = Array.from(document.querySelectorAll('.widget'));
-                const hn = els.find(e => /Hacker News/i.test(e.textContent));
-                if (!hn) return null;
-                hn.scrollIntoView({block: 'center'});
-                const r = hn.getBoundingClientRect();
-                return {x: r.x, y: r.y, w: r.width, h: r.height};
+                const isPopulated = (w) => {
+                    const body = w.querySelector('.widget-body');
+                    return body && body.querySelector('.feed-item, .hn-item');
+                };
+                let pick = els.find(e => /Hacker News/i.test(e.textContent) && isPopulated(e));
+                if (!pick) pick = els.find(isPopulated);
+                if (!pick) return null;
+                pick.scrollIntoView({block: 'center'});
+                const r = pick.getBoundingClientRect();
+                const title = (pick.querySelector('.widget-title')?.textContent || '').trim();
+                return {x: r.x, y: r.y, w: r.width, h: r.height, title};
             }"""
         )
-        if hn:
-            page.wait_for_timeout(200)
-            closeup = h.screens / "03-hn-closeup.png"
+        if target:
+            # Give the closeup a moment to render (scroll just
+            # happened) before clipping.
+            page.wait_for_timeout(500)
+            closeup = h.screens / "03-widget-closeup.png"
             page.screenshot(
                 path=str(closeup),
                 clip={
-                    "x": max(0, hn["x"] - 8),
-                    "y": max(0, hn["y"] - 8),
-                    "width": hn["w"] + 16,
-                    "height": hn["h"] + 16,
+                    "x": max(0, target["x"] - 8),
+                    "y": max(0, target["y"] - 8),
+                    "width": target["w"] + 16,
+                    "height": target["h"] + 16,
                 },
             )
             h.saved_screens.append(closeup)
@@ -675,7 +747,7 @@ def test_import_widgets(p: Playwright, h: Harness):
         ctx.close()
         h.report(
             name, "PASS",
-            f"{len(rendered_titles)} widgets rendered, all expected titles present",
+            f"{len(rendered_titles)} widgets rendered, {populated} feeds populated, all expected titles present",
         )
     finally:
         browser.close()
