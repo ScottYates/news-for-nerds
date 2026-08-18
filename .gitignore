@@ -23,3 +23,7 @@ doRestart.sh
 cmd/flippublic/
 flippublic
 flippublic.exe
+
+# Ad-hoc debug scripts (kept locally for re-running with
+# the integration suite; not part of the shipped binary)
+dbg_*.py
