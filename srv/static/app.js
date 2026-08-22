@@ -226,8 +226,11 @@ class NewsForNerds {
                 const url = e.data.url;
                 if (url && !this.visitedLinks.has(url)) {
                     this.visitedLinks.add(url);
-                    // Save to server
-                    fetch('/api/visited', {
+                    // Save to server. Use fetchWithCSRF so the CSRF
+                    // middleware on /api/visited accepts the POST
+                    // (the bare fetch() was getting 403'd in
+                    // production).
+                    this.fetchWithCSRF('/api/visited', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ url })

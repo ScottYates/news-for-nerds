@@ -778,6 +778,82 @@ def test_visited_links(h: Harness, ctx: BrowserContext):
     h.report(name, "PASS")
 
 
+def test_visited_links_iframe_path(p: Playwright, h: Harness):
+    """Reproduce the production bug: when a user clicks a link inside
+    an iframe widget (proxied through /api/proxy), the iframe sends
+    a 'nfn-link-clicked' postMessage to the parent. The parent's
+    handler used bare fetch('/api/visited', ...), which the CSRF
+    middleware rejected with 403. The fix: route through
+    fetchWithCSRF so the X-CSRF-Token header is sent.
+
+    This test simulates the iframe's postMessage, confirms the
+    server-side state updates, and reloads to confirm the link is
+    rendered as visited."""
+    name = "visited-links-iframe"
+    browser = p.chromium.launch()
+    try:
+        ctx = browser.new_context()
+        page = ctx.new_page()
+        # Page load -> csrf cookie + visitor_id
+        r = ctx.request.get(f"{h.base}/", max_redirects=0)
+        page.goto(f"{h.base}{r.headers['location']}", wait_until="domcontentloaded")
+        page.wait_for_function("window.newsForNerds !== undefined", timeout=5000)
+
+        iframe_url = "https://example.com/iframe-click-target"
+
+        # Simulate the iframe's link-clicked postMessage. The parent's
+        # message handler will respond by POSTing /api/visited.
+        page.evaluate(
+            f"""
+            () => {{
+                window.dispatchEvent(new MessageEvent('message', {{
+                    data: {{ type: 'nfn-link-clicked', url: {json.dumps(iframe_url)} }}
+                }}));
+            }}
+            """
+        )
+
+        # Wait for the POST to complete. fetchWithCSRF posts
+        # asynchronously; the in-memory visitedLinks set is the
+        # only sync signal. Poll the server-side state too.
+        page.wait_for_function(
+            f"() => window.newsForNerds.visitedLinks.has({json.dumps(iframe_url)})",
+            timeout=5000,
+        )
+
+        # Verify the server persisted it (the original bug: 403
+        # meant the server NEVER got the POST).
+        api = ctx.request.get(f"{h.base}/api/visited")
+        if api.status != 200:
+            return h.report(name, "FAIL", f"GET /api/visited: {api.status}")
+        urls = api.json()["data"]
+        if iframe_url not in urls:
+            return h.report(
+                name, "FAIL",
+                f"server never recorded the iframe click (got {urls})",
+            )
+
+        # Reload and confirm the link is rendered as visited.
+        page.reload(wait_until="domcontentloaded")
+        page.wait_for_function("window.newsForNerds !== undefined", timeout=5000)
+        # After reload, newsForNerds.visitedLinks is reloaded from
+        # /api/visited. Check it contains the URL.
+        in_mem = page.evaluate("() => [...window.newsForNerds.visitedLinks]")
+        if iframe_url not in in_mem:
+            return h.report(
+                name, "FAIL",
+                f"after reload, in-memory visitedLinks missing URL: {in_mem}",
+            )
+
+        ctx.close()
+        h.report(
+            name, "PASS",
+            f"iframe-click recorded and persisted across reload",
+        )
+    finally:
+        browser.close()
+
+
 def test_json_body_cap(h: Harness, ctx: BrowserContext):
     """A 2 MB JSON body to a state-changing endpoint returns 413
     (overrides any 403 from the CSRF middleware, since the body-cap
@@ -882,6 +958,7 @@ def main():
                 test_csrf_mismatch(h, ctx)
                 test_widget_lifecycle(h, ctx)
                 test_visited_links(h, ctx)
+                test_visited_links_iframe_path(p, h)
                 test_json_body_cap(h, ctx)
                 test_ssrf_block(h, ctx)
                 test_xss_in_proxy_css(h, ctx)
