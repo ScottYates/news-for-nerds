@@ -28,6 +28,29 @@ type Config struct {
 	// the server directly could otherwise claim any identity.
 	TrustExeDevHeaders bool
 
+	// TrustedProxies - TRUSTED_PROXIES. Which direct peers may set
+	// X-Forwarded-Proto/Host/For: "private" (default: loopback and
+	// private ranges), "all", "none", or a comma-separated CIDR list.
+	TrustedProxies string
+
+	// RateLimitPerMin - RATE_LIMIT_PER_MIN. Requests a minute one
+	// client may make to the endpoints that fetch remote content
+	// (proxy, feed, favicon). 0 disables the limit.
+	RateLimitPerMin int
+
+	// ProxyInsecureTLS - PROXY_INSECURE_TLS. When true the iframe
+	// proxy accepts invalid upstream certificates. Default false.
+	ProxyInsecureTLS bool
+
+	// FeedMaxFeeds - FEED_MAX_FEEDS. Most feed URLs the cache will
+	// hold; new URLs are refused beyond it.
+	FeedMaxFeeds int
+
+	// FeedIdleDays - FEED_IDLE_DAYS. A feed nobody has requested for
+	// this many days is no longer refreshed in the background, and is
+	// deleted after four times as long.
+	FeedIdleDays int
+
 	// FeedProxyAllowPrivate - FEED_PROXY_ALLOW_PRIVATE. When true, a
 	// page's feed proxy may be on a private or loopback address.
 	// Default false, so the proxy setting cannot be used to reach
@@ -63,6 +86,10 @@ func DefaultConfig() *Config {
 		DBPath:              "db.sqlite3",
 		LogFile:             "logs/newsfornerds.log",
 		LogLevel:            "info",
+		TrustedProxies:      "private",
+		RateLimitPerMin:     300,
+		FeedMaxFeeds:        5000,
+		FeedIdleDays:        14,
 		FeedRefreshInterval: 1,
 		FeedStaleMinutes:    5,
 		FeedErrorBackoff:    30,
@@ -103,6 +130,11 @@ func LoadConfig(envFile string) (*Config, error) {
 
 	cfg.TrustExeDevHeaders = envOrDefaultBool("TRUST_EXEDEV_HEADERS", cfg.TrustExeDevHeaders)
 	cfg.FeedProxyAllowPrivate = envOrDefaultBool("FEED_PROXY_ALLOW_PRIVATE", cfg.FeedProxyAllowPrivate)
+	cfg.TrustedProxies = envOrDefault("TRUSTED_PROXIES", cfg.TrustedProxies)
+	cfg.RateLimitPerMin = envOrDefaultInt("RATE_LIMIT_PER_MIN", cfg.RateLimitPerMin)
+	cfg.ProxyInsecureTLS = envOrDefaultBool("PROXY_INSECURE_TLS", cfg.ProxyInsecureTLS)
+	cfg.FeedMaxFeeds = envOrDefaultInt("FEED_MAX_FEEDS", cfg.FeedMaxFeeds)
+	cfg.FeedIdleDays = envOrDefaultInt("FEED_IDLE_DAYS", cfg.FeedIdleDays)
 
 	cfg.FeedRefreshInterval = envOrDefaultInt("FEED_REFRESH_INTERVAL", cfg.FeedRefreshInterval)
 	cfg.FeedStaleMinutes = envOrDefaultInt("FEED_STALE_MINUTES", cfg.FeedStaleMinutes)

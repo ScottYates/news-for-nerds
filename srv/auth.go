@@ -45,18 +45,15 @@ func generateState() string {
 }
 
 // requestIsSecure reports whether the given request was received
-// over HTTPS, directly (r.TLS != nil) or via a TLS-terminating proxy
-// (X-Forwarded-Proto: https). Used to set the Secure flag on
+// over HTTPS, directly (r.TLS != nil) or via a trusted TLS-terminating
+// proxy (X-Forwarded-Proto: https). Used to set the Secure flag on
 // authentication cookies correctly for both localhost-HTTP dev
 // and HTTPS production behind a reverse proxy.
-func requestIsSecure(r *http.Request) bool {
+func (s *Server) requestIsSecure(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
-	if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
-		return true
-	}
-	return false
+	return strings.EqualFold(s.forwardedHeader(r, "X-Forwarded-Proto"), "https")
 }
 
 func (s *Server) getRedirectURI(r *http.Request) string {
@@ -64,10 +61,10 @@ func (s *Server) getRedirectURI(r *http.Request) string {
 	host := r.Host
 
 	// Check for proxy headers (exe.dev proxy)
-	if fwdHost := r.Header.Get("X-Forwarded-Host"); fwdHost != "" {
+	if fwdHost := s.forwardedHeader(r, "X-Forwarded-Host"); fwdHost != "" {
 		host = fwdHost
 	}
-	if fwdProto := r.Header.Get("X-Forwarded-Proto"); fwdProto != "" {
+	if fwdProto := s.forwardedHeader(r, "X-Forwarded-Proto"); fwdProto == "http" || fwdProto == "https" {
 		scheme = fwdProto
 	} else if r.TLS == nil && !strings.Contains(host, "exe.xyz") {
 		scheme = "http"
@@ -80,7 +77,7 @@ func (s *Server) getRedirectURI(r *http.Request) string {
 // This ensures cookies work across different ports (8000, 443, 80)
 func (s *Server) getCookieDomain(r *http.Request) string {
 	host := r.Host
-	if fwdHost := r.Header.Get("X-Forwarded-Host"); fwdHost != "" {
+	if fwdHost := s.forwardedHeader(r, "X-Forwarded-Host"); fwdHost != "" {
 		host = fwdHost
 	}
 	// Strip port if present
@@ -108,7 +105,7 @@ func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		Domain:   s.getCookieDomain(r),
 		HttpOnly: true,
-		Secure:   requestIsSecure(r),
+		Secure:   s.requestIsSecure(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   600, // 10 minutes
 	})
@@ -128,7 +125,7 @@ func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 			Path:     "/",
 			Domain:   s.getCookieDomain(r),
 			HttpOnly: true,
-			Secure:   requestIsSecure(r),
+			Secure:   s.requestIsSecure(r),
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   600, // 10 minutes
 		})
@@ -306,7 +303,7 @@ func (s *Server) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		Domain:   s.getCookieDomain(r),
 		HttpOnly: true,
-		Secure:   requestIsSecure(r),
+		Secure:   s.requestIsSecure(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   s.Config.SessionDurationDays * 86400,
 	})
@@ -358,7 +355,8 @@ func (s *Server) exchangeCode(code, redirectURI string) (*GoogleTokenResponse, e
 	data.Set("redirect_uri", redirectURI)
 	data.Set("grant_type", "authorization_code")
 
-	resp, err := http.Post(
+	// s.httpClient has a timeout; http.Post on the default client has none.
+	resp, err := s.httpClient.Post(
 		"https://oauth2.googleapis.com/token",
 		"application/x-www-form-urlencoded",
 		strings.NewReader(data.Encode()),
@@ -368,7 +366,7 @@ func (s *Server) exchangeCode(code, redirectURI string) (*GoogleTokenResponse, e
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, err
 	}
@@ -395,14 +393,26 @@ func (s *Server) getUserInfo(accessToken string) (*GoogleUserInfo, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("userinfo request failed with status %d", resp.StatusCode)
 	}
 
 	var userInfo GoogleUserInfo
 	if err := json.Unmarshal(body, &userInfo); err != nil {
 		return nil, err
+	}
+	// Accounts are keyed by email, so it must be present and one
+	// Google has verified. An error body used to decode to an empty
+	// email and create (or sign in to) a user with no address.
+	if strings.TrimSpace(userInfo.Email) == "" {
+		return nil, fmt.Errorf("userinfo response has no email")
+	}
+	if !userInfo.VerifiedEmail {
+		return nil, fmt.Errorf("google account email is not verified")
 	}
 
 	return &userInfo, nil
@@ -485,7 +495,7 @@ func (s *Server) GetOrCreateVisitorID(w http.ResponseWriter, r *http.Request) st
 		Path:     "/",
 		Domain:   s.getCookieDomain(r),
 		HttpOnly: true,
-		Secure:   requestIsSecure(r),
+		Secure:   s.requestIsSecure(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   s.Config.VisitorDurationDays * 86400,
 	})

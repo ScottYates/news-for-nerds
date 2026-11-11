@@ -11,6 +11,9 @@ import (
 
 // proxyCSP is the Content-Security-Policy sent on every /api/proxy
 // response. No allow-same-origin: the document gets an opaque origin.
+// maxProxyBodyBytes caps a non-HTML proxied response.
+const maxProxyBodyBytes = 20 << 20 // 20 MiB
+
 const proxyCSP = "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox; frame-ancestors 'self'"
 
 // HandleAPIProxy proxies iframe content and injects <base target="_blank"> and optional CSS
@@ -161,9 +164,10 @@ func (s *Server) HandleAPIProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For non-HTML content, just proxy as-is
+	// For non-HTML content, proxy as-is, up to a size cap so the
+	// endpoint cannot be used to relay arbitrarily large downloads.
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	io.Copy(w, io.LimitReader(resp.Body, maxProxyBodyBytes))
 }
 
 // rewriteRelativeURLs converts relative URLs to absolute

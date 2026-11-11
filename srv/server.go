@@ -99,13 +99,28 @@ type Server struct {
 	TemplatesDir string
 	StaticDir    string
 	httpClient   *http.Client
-	proxyClient  *http.Client // allows insecure TLS for iframe proxy
+	proxyClient  *http.Client // fetches pages for the iframe proxy
+	proxyTrust   proxyTrust   // peers allowed to set X-Forwarded-* headers
+	limiter      *rateLimiter // per-client limit on remote-fetching endpoints
 }
 
 func New(cfg *Config, hostname string) (*Server, error) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	baseDir := filepath.Dir(thisFile)
+	trust, err := parseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return nil, err
+	}
+	// Certificate checks stay on for proxied pages unless the operator
+	// turns them off. Skipping them lets anyone on the network path
+	// replace the content shown in a widget.
+	proxyTransport := &http.Transport{}
+	if cfg.ProxyInsecureTLS {
+		proxyTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
 	srv := &Server{
+		proxyTrust:   trust,
+		limiter:      newRateLimiter(cfg.RateLimitPerMin),
 		Config:       cfg,
 		Hostname:     hostname,
 		TemplatesDir: filepath.Join(baseDir, "templates"),
@@ -120,9 +135,7 @@ func New(cfg *Config, hostname string) (*Server, error) {
 		},
 		proxyClient: &http.Client{
 			Timeout: 30 * time.Second,
-			Transport: safeTransport(&http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			}),
+			Transport: safeTransport(proxyTransport),
 		},
 	}
 	if err := srv.setUpDatabase(cfg.DBPath); err != nil {
@@ -1230,10 +1243,12 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("DELETE /api/widgets/{id}", s.HandleAPIDeleteWidget)
 	mux.HandleFunc("PATCH /api/pages/{id}", s.HandleAPIUpdatePage)
 	mux.HandleFunc("GET /api/pages/{id}/check-slug", s.HandleAPICheckSlug)
-	mux.HandleFunc("GET /api/feed", s.HandleAPIGetFeed)
-	mux.HandleFunc("POST /api/feed/refresh", s.HandleAPIRefreshFeed)
-	mux.HandleFunc("GET /api/favicon", s.HandleAPIGetFavicon)
-	mux.HandleFunc("GET /api/proxy", s.HandleAPIProxy)
+	// These make the server fetch a URL the caller chose, so each
+	// client gets a request budget.
+	mux.HandleFunc("GET /api/feed", s.rateLimited(s.HandleAPIGetFeed))
+	mux.HandleFunc("POST /api/feed/refresh", s.rateLimited(s.HandleAPIRefreshFeed))
+	mux.HandleFunc("GET /api/favicon", s.rateLimited(s.HandleAPIGetFavicon))
+	mux.HandleFunc("GET /api/proxy", s.rateLimited(s.HandleAPIProxy))
 	mux.HandleFunc("POST /api/visited", s.HandleAPIMarkVisited)
 	mux.HandleFunc("DELETE /api/visited", s.HandleAPIUnmarkVisited)
 	mux.HandleFunc("GET /api/visited", s.HandleAPIGetVisitedLinks)
@@ -1252,6 +1267,9 @@ func (s *Server) Serve(addr string) error {
 		"log_level", s.Config.LogLevel,
 		"oauth", s.Config.GoogleClientID != "",
 		"canonical_domain", s.Config.CanonicalDomain,
+		"trusted_proxies", s.Config.TrustedProxies,
+		"trust_exedev_headers", s.Config.TrustExeDevHeaders,
+		"rate_limit_per_min", s.Config.RateLimitPerMin,
 		"feed_refresh_min", s.Config.FeedRefreshInterval,
 		"feed_stale_min", s.Config.FeedStaleMinutes,
 	)
@@ -1271,15 +1289,7 @@ func (s *Server) Serve(addr string) error {
 		// trusted reverse proxy reports X-Forwarded-Proto: https.
 		// This lets the same binary serve localhost dev (HTTP, no
 		// Secure) and production behind a TLS proxy (HTTPS, Secure).
-		func(r *http.Request) bool {
-			if r.TLS != nil {
-				return true
-			}
-			if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
-				return true
-			}
-			return false
-		},
+		s.requestIsSecure,
 		s.getCookieDomain,
 		handler,
 	)
@@ -1293,7 +1303,7 @@ func (s *Server) Serve(addr string) error {
 		inner := handler
 		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			host := r.Host
-			if fwdHost := r.Header.Get("X-Forwarded-Host"); fwdHost != "" {
+			if fwdHost := s.forwardedHeader(r, "X-Forwarded-Host"); fwdHost != "" {
 				host = fwdHost
 			}
 			// Strip port for comparison
@@ -1307,7 +1317,7 @@ func (s *Server) Serve(addr string) error {
 			}
 			if hostNoPort != canonicalNoPort {
 				scheme := "https"
-				if fwdProto := r.Header.Get("X-Forwarded-Proto"); fwdProto != "" {
+				if fwdProto := s.forwardedHeader(r, "X-Forwarded-Proto"); fwdProto == "http" || fwdProto == "https" {
 					scheme = fwdProto
 				}
 				target := scheme + "://" + canonical + r.RequestURI
@@ -1319,5 +1329,17 @@ func (s *Server) Serve(addr string) error {
 		})
 	}
 
-	return http.ListenAndServe(addr, handler)
+	// Explicit timeouts: the zero-value server waits forever for slow
+	// or idle clients. WriteTimeout is long because a first request
+	// for a feed fetches it before answering.
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      3 * time.Minute,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    64 << 10,
+	}
+	return httpServer.ListenAndServe()
 }

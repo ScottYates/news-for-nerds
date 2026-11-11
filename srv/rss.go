@@ -3,6 +3,7 @@ package srv
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -80,6 +81,8 @@ func (s *Server) refreshAllFeeds(ctx context.Context) {
 		feeds = append(feeds, errorFeeds...)
 	}
 
+	feeds = s.dropIdleFeeds(ctx, feeds)
+
 	if len(feeds) == 0 {
 		return
 	}
@@ -94,6 +97,46 @@ func (s *Server) refreshAllFeeds(ctx context.Context) {
 	for i := 0; i < count; i++ {
 		s.fetchAndStoreFeed(ctx, feeds[i].Url)
 	}
+}
+
+// dropIdleFeeds removes from the refresh list every feed that no
+// dashboard has requested within FeedIdleDays, and deletes rows idle
+// for four times that long. Rows from before last_requested existed
+// (NULL) are stamped now, which starts their idle clock.
+func (s *Server) dropIdleFeeds(ctx context.Context, feeds []dbgen.RssFeed) []dbgen.RssFeed {
+	if s.Config.FeedIdleDays <= 0 {
+		return feeds
+	}
+	now := time.Now()
+	idle := time.Duration(s.Config.FeedIdleDays) * 24 * time.Hour
+
+	_, _ = s.DB.ExecContext(ctx, "UPDATE rss_feeds SET last_requested = ? WHERE last_requested IS NULL", now)
+	if res, err := s.DB.ExecContext(ctx, "DELETE FROM rss_feeds WHERE last_requested < ?", now.Add(-4*idle)); err == nil {
+		if n, _ := res.RowsAffected(); n > 0 {
+			slog.Info("deleted idle feeds", "count", n)
+		}
+	}
+
+	rows, err := s.DB.QueryContext(ctx, "SELECT url FROM rss_feeds WHERE last_requested >= ?", now.Add(-idle))
+	if err != nil {
+		slog.Warn("failed to list active feeds", "error", err)
+		return feeds
+	}
+	defer rows.Close()
+	active := make(map[string]bool)
+	for rows.Next() {
+		var u string
+		if rows.Scan(&u) == nil {
+			active[u] = true
+		}
+	}
+	kept := feeds[:0]
+	for _, f := range feeds {
+		if active[f.Url] {
+			kept = append(kept, f)
+		}
+	}
+	return kept
 }
 
 func (s *Server) fetchAndStoreFeed(ctx context.Context, feedURL string) {
@@ -258,15 +301,32 @@ func (s *Server) GetFeed(ctx context.Context, feedURL string) (*FeedData, error)
 // GetFeedWithProxy returns cached feed data, using the specified proxy for initial fetch if needed.
 func (s *Server) GetFeedWithProxy(ctx context.Context, feedURL string, proxy ProxyConfig) (*FeedData, error) {
 	q := dbgen.New(s.DB)
+	now := time.Now()
+
+	// A URL not seen before adds a row that the refresher then keeps
+	// up to date, so the number of rows is capped.
+	if _, err := q.GetFeedByURL(ctx, feedURL); err != nil {
+		var count int
+		if cerr := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM rss_feeds").Scan(&count); cerr == nil &&
+			s.Config.FeedMaxFeeds > 0 && count >= s.Config.FeedMaxFeeds {
+			return nil, fmt.Errorf("feed limit reached; no new feeds can be added right now")
+		}
+	}
 
 	// Ensure feed exists
 	err := q.CreateFeedIfNotExists(ctx, dbgen.CreateFeedIfNotExistsParams{
 		Url:       feedURL,
-		CreatedAt: time.Now(),
+		CreatedAt: now,
 	})
 	if err != nil {
 		return nil, err
 	}
+
+	// Record that a dashboard asked for this feed (at most one write an
+	// hour). The refresher uses it to skip feeds nobody reads.
+	_, _ = s.DB.ExecContext(ctx,
+		"UPDATE rss_feeds SET last_requested = ? WHERE url = ? AND (last_requested IS NULL OR last_requested < ?)",
+		now, feedURL, now.Add(-time.Hour))
 
 	feed, err := q.GetFeedByURL(ctx, feedURL)
 	if err != nil {
@@ -276,9 +336,11 @@ func (s *Server) GetFeedWithProxy(ctx context.Context, feedURL string, proxy Pro
 	var items []FeedItem
 	_ = json.Unmarshal([]byte(feed.Content), &items)
 
-	// If never fetched, fetch now with aggressive retry since we have no cache
+	// If never fetched, fetch now. Only transient errors are retried:
+	// this runs inside the request, and retrying every error held it
+	// open for minutes on a dead URL.
 	if feed.LastFetched == nil {
-		s.fetchAndStoreFeedWithRetryAndProxy(ctx, feedURL, true, proxy) // aggressive retry for new feeds
+		s.fetchAndStoreFeedWithRetryAndProxy(ctx, feedURL, false, proxy)
 		feed, err = q.GetFeedByURL(ctx, feedURL)
 		if err != nil {
 			return nil, err
