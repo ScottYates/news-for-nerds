@@ -18,7 +18,7 @@ A customizable RSS dashboard for news junkies. Create pages with draggable, resi
 
 ## Requirements
 
-- Go 1.25+
+- Go 1.26+
 - SQLite (embedded via modernc.org/sqlite, no separate install needed)
 - Google OAuth credentials (optional, for persistent accounts)
 
