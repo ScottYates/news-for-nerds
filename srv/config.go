@@ -21,6 +21,19 @@ type Config struct {
 	GoogleClientID     string // GOOGLE_CLIENT_ID
 	GoogleClientSecret string // GOOGLE_CLIENT_SECRET
 
+	// TrustExeDevHeaders - TRUST_EXEDEV_HEADERS. When true, the
+	// X-ExeDev-UserID / X-ExeDev-Email request headers identify the
+	// user. Only safe when every request arrives through the exe.dev
+	// proxy, which sets them. Default false: a client that can reach
+	// the server directly could otherwise claim any identity.
+	TrustExeDevHeaders bool
+
+	// FeedProxyAllowPrivate - FEED_PROXY_ALLOW_PRIVATE. When true, a
+	// page's feed proxy may be on a private or loopback address.
+	// Default false, so the proxy setting cannot be used to reach
+	// internal services.
+	FeedProxyAllowPrivate bool
+
 	// Feed settings
 	FeedRefreshInterval int // FEED_REFRESH_INTERVAL - minutes between feed refresh cycles (default 1)
 	FeedStaleMinutes    int // FEED_STALE_MINUTES - minutes before a feed is considered stale (default 5)
@@ -88,6 +101,9 @@ func LoadConfig(envFile string) (*Config, error) {
 	cfg.GoogleClientID = envOrDefault("GOOGLE_CLIENT_ID", cfg.GoogleClientID)
 	cfg.GoogleClientSecret = envOrDefault("GOOGLE_CLIENT_SECRET", cfg.GoogleClientSecret)
 
+	cfg.TrustExeDevHeaders = envOrDefaultBool("TRUST_EXEDEV_HEADERS", cfg.TrustExeDevHeaders)
+	cfg.FeedProxyAllowPrivate = envOrDefaultBool("FEED_PROXY_ALLOW_PRIVATE", cfg.FeedProxyAllowPrivate)
+
 	cfg.FeedRefreshInterval = envOrDefaultInt("FEED_REFRESH_INTERVAL", cfg.FeedRefreshInterval)
 	cfg.FeedStaleMinutes = envOrDefaultInt("FEED_STALE_MINUTES", cfg.FeedStaleMinutes)
 	cfg.FeedErrorBackoff = envOrDefaultInt("FEED_ERROR_BACKOFF", cfg.FeedErrorBackoff)
@@ -146,6 +162,16 @@ func loadEnvFile(path string) error {
 func envOrDefault(key, defaultVal string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return defaultVal
+}
+
+func envOrDefaultBool(key string, defaultVal bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
 	}
 	return defaultVal
 }

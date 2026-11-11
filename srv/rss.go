@@ -132,11 +132,17 @@ func (s *Server) fetchAndStoreFeedWithRetryAndProxy(ctx context.Context, feedURL
 			if proxy.Username != "" {
 				proxyParsed.User = url.UserPassword(proxy.Username, proxy.Password)
 			}
+			// The proxy address is user-supplied. Dial it through the
+			// same guard as every other outbound request so it cannot
+			// point at loopback, private or metadata addresses, unless
+			// the operator has allowed private proxies.
+			transport := &http.Transport{Proxy: http.ProxyURL(proxyParsed)}
+			if !s.Config.FeedProxyAllowPrivate {
+				transport = safeTransport(transport)
+			}
 			parser.Client = &http.Client{
-				Timeout: fetchTimeout,
-				Transport: &http.Transport{
-					Proxy: http.ProxyURL(proxyParsed),
-				},
+				Timeout:   fetchTimeout,
+				Transport: transport,
 			}
 			slog.Debug("using proxy for feed fetch", "url", feedURL, "proxy", proxy.URL, "auth", proxy.Username != "")
 		} else {

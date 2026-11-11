@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -84,13 +85,10 @@ func (s *Server) assignSlug(ctx context.Context, q *dbgen.Queries, pageID, name,
 		UpdatedAt: now,
 		ID:        pageID,
 	})
-	// Enable slug access so the owner can reach the page via slug URL
-	slugAccess := int64(1)
-	_ = q.UpdatePageSlugAccess(ctx, dbgen.UpdatePageSlugAccessParams{
-		SlugAccess: &slugAccess,
-		UpdatedAt:  now,
-		ID:         pageID,
-	})
+	// slug_access is left as it is. The owner can always open the page
+	// by its slug; letting everyone else do so is the owner's choice in
+	// page settings, because the slug is derived from their name and is
+	// easy to guess.
 	return candidate
 }
 
@@ -222,6 +220,13 @@ func (s *Server) HandlePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The page config holds the owner's feed-proxy address and
+	// credentials. Everyone else gets a copy without them; feeds on
+	// a shared page are still fetched through the proxy server-side.
+	if !isOwner {
+		page.Config = redactPageConfig(page.Config)
+	}
+
 	// Pass ownership info to template
 	type pageData struct {
 		dbgen.Page
@@ -261,11 +266,7 @@ func (s *Server) HandleAPIGetWidgets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	isOwner := page.UserID == userID
-	isPublic := page.IsPublic != nil && *page.IsPublic == 1
-	hasSlugAccess := page.SlugAccess != nil && *page.SlugAccess == 1 && page.Slug != nil
-	
-	if !isOwner && !isPublic && !hasSlugAccess {
+	if !canViewPage(page, userID) {
 		s.writeJSON(w, http.StatusForbidden, APIResponse{Error: "forbidden"})
 		return
 	}
@@ -766,10 +767,10 @@ func (s *Server) HandleAPIGetFeed(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid url: " + err.Error()})
 		return
 	}
-	proxy := ProxyConfig{
-		URL:      r.URL.Query().Get("proxy"),
-		Username: r.URL.Query().Get("proxy_user"),
-		Password: r.URL.Query().Get("proxy_pass"),
+	proxy, err := s.feedProxyForRequest(r)
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid feed proxy: " + err.Error()})
+		return
 	}
 
 	feed, err := s.GetFeedWithProxy(r.Context(), feedURL, proxy)
@@ -779,6 +780,73 @@ func (s *Server) HandleAPIGetFeed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: feed})
+}
+
+// canViewPage reports whether userID may read page: the owner, anyone
+// for a public page, and anyone for a page with slug access enabled.
+func canViewPage(page dbgen.Page, userID string) bool {
+	if page.UserID == userID {
+		return true
+	}
+	if page.IsPublic != nil && *page.IsPublic == 1 {
+		return true
+	}
+	return page.SlugAccess != nil && *page.SlugAccess == 1 && page.Slug != nil && *page.Slug != ""
+}
+
+// proxyConfigKeys are the page-config fields that hold the feed
+// proxy and its credentials. They never leave the server for anyone
+// but the page owner.
+var proxyConfigKeys = []string{"proxy_url", "proxy_user", "proxy_pass"}
+
+// feedProxyForRequest returns the feed proxy configured on the page
+// named by the "page" query parameter, if the caller may view that
+// page. The proxy settings are read from the page's stored config;
+// the request itself cannot supply a proxy address or credentials.
+// A zero ProxyConfig means "connect directly".
+func (s *Server) feedProxyForRequest(r *http.Request) (ProxyConfig, error) {
+	pageID := r.URL.Query().Get("page")
+	if pageID == "" {
+		return ProxyConfig{}, nil
+	}
+	page, err := dbgen.New(s.DB).GetPageByID(r.Context(), pageID)
+	if err != nil || !canViewPage(page, s.GetUserID(r)) {
+		return ProxyConfig{}, nil
+	}
+	var cfg struct {
+		ProxyURL  string `json:"proxy_url"`
+		ProxyUser string `json:"proxy_user"`
+		ProxyPass string `json:"proxy_pass"`
+	}
+	if err := json.Unmarshal([]byte(page.Config), &cfg); err != nil || strings.TrimSpace(cfg.ProxyURL) == "" {
+		return ProxyConfig{}, nil
+	}
+	proxyURL := strings.TrimSpace(cfg.ProxyURL)
+	if s.Config.FeedProxyAllowPrivate {
+		if u, err := url.Parse(proxyURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return ProxyConfig{}, fmt.Errorf("proxy must be an http(s) URL")
+		}
+	} else if err := validateOutboundURL(proxyURL); err != nil {
+		return ProxyConfig{}, err
+	}
+	return ProxyConfig{URL: proxyURL, Username: cfg.ProxyUser, Password: cfg.ProxyPass}, nil
+}
+
+// redactPageConfig removes the feed-proxy fields from a page config
+// JSON string. Used for every viewer who is not the page owner.
+func redactPageConfig(config string) string {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(config), &m); err != nil {
+		return "{}"
+	}
+	for _, k := range proxyConfigKeys {
+		delete(m, k)
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return "{}"
+	}
+	return string(out)
 }
 
 func (s *Server) HandleAPIRefreshFeed(w http.ResponseWriter, r *http.Request) {
@@ -791,10 +859,10 @@ func (s *Server) HandleAPIRefreshFeed(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid url: " + err.Error()})
 		return
 	}
-	proxy := ProxyConfig{
-		URL:      r.URL.Query().Get("proxy"),
-		Username: r.URL.Query().Get("proxy_user"),
-		Password: r.URL.Query().Get("proxy_pass"),
+	proxy, err := s.feedProxyForRequest(r)
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid feed proxy: " + err.Error()})
+		return
 	}
 
 	// Force refresh with optional proxy

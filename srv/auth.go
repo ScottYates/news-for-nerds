@@ -189,7 +189,7 @@ func (s *Server) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	q := dbgen.New(s.DB)
 	
 	// Check if there's an exe.dev user ID we should link
-	exedevUserID := strings.TrimSpace(r.Header.Get("X-ExeDev-UserID"))
+	exedevUserID := s.exeDevUserID(r)
 	
 	user, err := q.GetUserByEmail(ctx, userInfo.Email)
 	now := time.Now()
@@ -424,6 +424,26 @@ func (s *Server) GetUserFromRequest(r *http.Request) (*dbgen.GetSessionRow, erro
 	return &session, nil
 }
 
+// exeDevUserID returns the user ID the exe.dev proxy put in the
+// X-ExeDev-UserID header, or "" when those headers are not trusted
+// (TRUST_EXEDEV_HEADERS unset) or absent. Every read of the header
+// goes through here: without the setting, any client that can reach
+// the server could send the header and act as another user.
+//
+// Values that look like this app's own IDs ("visitor:...",
+// "anonymous") are refused so the header can never name a cookie
+// visitor's account.
+func (s *Server) exeDevUserID(r *http.Request) string {
+	if s.Config == nil || !s.Config.TrustExeDevHeaders {
+		return ""
+	}
+	id := strings.TrimSpace(r.Header.Get("X-ExeDev-UserID"))
+	if id == "anonymous" || strings.HasPrefix(id, "visitor:") {
+		return ""
+	}
+	return id
+}
+
 // GetUserID returns the user ID from session, exe.dev header, or visitor cookie.
 // It never returns "anonymous" — every visitor gets a stable unique ID.
 func (s *Server) GetUserID(r *http.Request) string {
@@ -434,7 +454,7 @@ func (s *Server) GetUserID(r *http.Request) string {
 	}
 	
 	// Fall back to exe.dev proxy header
-	if exeUserID := strings.TrimSpace(r.Header.Get("X-ExeDev-UserID")); exeUserID != "" {
+	if exeUserID := s.exeDevUserID(r); exeUserID != "" {
 		// Check if this exe.dev user is linked to a Google OAuth user
 		q := dbgen.New(s.DB)
 		if linkedUser, err := q.GetUserByExedevID(r.Context(), &exeUserID); err == nil {
@@ -504,8 +524,11 @@ func (s *Server) HandleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	
 	// Check exe.dev proxy auth
-	exeUserID := strings.TrimSpace(r.Header.Get("X-ExeDev-UserID"))
-	exeEmail := strings.TrimSpace(r.Header.Get("X-ExeDev-Email"))
+	exeUserID := s.exeDevUserID(r)
+	exeEmail := ""
+	if exeUserID != "" {
+		exeEmail = strings.TrimSpace(r.Header.Get("X-ExeDev-Email"))
+	}
 	if exeUserID != "" {
 		s.writeJSON(w, http.StatusOK, map[string]interface{}{
 			"authenticated": true,

@@ -1036,14 +1036,9 @@ img { max-width: 100%; height: auto; }
 
         body.innerHTML = '<div class="feed-loading">Loading feed...</div>';
 
-        // Build URL with optional proxy parameters
-        let proxyParam = this.proxyUrl ? `&proxy=${encodeURIComponent(this.proxyUrl)}` : '';
-        if (this.proxyUrl && this.proxyUser) {
-            proxyParam += `&proxy_user=${encodeURIComponent(this.proxyUser)}`;
-            if (this.proxyPass) {
-                proxyParam += `&proxy_pass=${encodeURIComponent(this.proxyPass)}`;
-            }
-        }
+        // The server looks up this page's feed proxy itself. Proxy
+        // addresses and credentials are never sent from the browser.
+        const proxyParam = `&page=${encodeURIComponent(this.pageId)}`;
 
         // Set a 3-second timeout to force refresh if still loading
         const timeoutId = setTimeout(() => {
@@ -1436,13 +1431,7 @@ img { max-width: 100%; height: auto; }
         body.innerHTML = '<div class="feed-loading">Refreshing...</div>';
 
         try {
-            let proxyParam = this.proxyUrl ? `&proxy=${encodeURIComponent(this.proxyUrl)}` : '';
-            if (this.proxyUrl && this.proxyUser) {
-                proxyParam += `&proxy_user=${encodeURIComponent(this.proxyUser)}`;
-                if (this.proxyPass) {
-                    proxyParam += `&proxy_pass=${encodeURIComponent(this.proxyPass)}`;
-                }
-            }
+            const proxyParam = `&page=${encodeURIComponent(this.pageId)}`;
             await this.fetchWithCSRF(`/api/feed/refresh?url=${encodeURIComponent(config.feed_url)}${proxyParam}`, {
                 method: 'POST'
             });

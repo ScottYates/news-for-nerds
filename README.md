@@ -154,6 +154,10 @@ Migrations are located in `db/migrations/` and run automatically in order.
 
 - `GOOGLE_CLIENT_ID`: Google OAuth client ID (optional)
 - `GOOGLE_CLIENT_SECRET`: Google OAuth client secret (optional)
+- `TRUST_EXEDEV_HEADERS`: set to `1` only when the server is reachable solely through the exe.dev proxy. It makes the `X-ExeDev-UserID` header identify the user. Off by default, because any client that can reach the server directly could send that header.
+- `FEED_PROXY_ALLOW_PRIVATE`: set to `1` to allow a page's feed proxy to be on a private or loopback address.
+
+See `.env.example` for the full list.
 
 ## Usage Tips
 
