@@ -2,6 +2,8 @@ module srv.exe.dev
 
 go 1.26.0
 
+toolchain go1.26.11
+
 require (
 	github.com/PuerkitoBio/goquery v1.8.0
 	github.com/google/uuid v1.6.0
