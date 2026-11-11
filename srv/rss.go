@@ -41,7 +41,6 @@ type FeedData struct {
 	Items            []FeedItem `json:"items"`
 	Fetched          time.Time  `json:"fetched"`
 	Pending          bool       `json:"pending,omitempty"`            // true if feed is still being fetched
-	ClientFetchURL   string     `json:"client_fetch_url,omitempty"`   // if set, client should fetch this URL and submit results
 	Error            string     `json:"error,omitempty"`              // last error message
 }
 
@@ -214,7 +213,7 @@ func (s *Server) fetchAndStoreFeedWithRetryAndProxy(ctx context.Context, feedURL
 			// the UI as real Unicode (e.g. "Sony's next-gen" instead of
 			// "Sony&#8217;s next-gen"). Idempotent on already-clean text.
 			Title:       decodeFeedEntities(item.Title),
-			Link:        item.Link,
+			Link:        safeLinkURL(item.Link),
 			Description: truncate(stripHTML(decodeFeedEntities(item.Description)), 300),
 		}
 		if item.PublishedParsed != nil {
@@ -289,53 +288,14 @@ func (s *Server) GetFeedWithProxy(ctx context.Context, feedURL string, proxy Pro
 		data.Fetched = *feed.LastFetched
 	}
 
-	// If we have no content and there was an error, ask client to fetch
-	if len(items) == 0 && feed.LastError != nil {
-		data.Pending = true
-		data.ClientFetchURL = feedURL
+	// No content and the last fetch failed: report the error so the
+	// widget can show it. The cache is only ever filled by the
+	// server's own fetch, never from data a client submits.
+	if len(items) == 0 && feed.LastError != nil && *feed.LastError != "" {
 		data.Error = *feed.LastError
 	}
 
 	return data, nil
-}
-
-// StoreFeedFromClient stores feed data that was fetched by the client's browser
-func (s *Server) StoreFeedFromClient(ctx context.Context, feedURL, title string, items []FeedItem) error {
-	q := dbgen.New(s.DB)
-
-	// Ensure feed exists
-	err := q.CreateFeedIfNotExists(ctx, dbgen.CreateFeedIfNotExistsParams{
-		Url:       feedURL,
-		CreatedAt: time.Now(),
-	})
-	if err != nil {
-		return err
-	}
-
-	// Decode entities on every item coming from the client-side fetcher
-	// for the same reason the server-side fetcher does it — the browser
-	// parses XML with the DOMParser which leaves raw entity strings in
-	// .textContent when the entity was double-encoded by the feed author.
-	for i := range items {
-		items[i].Title = decodeFeedEntities(items[i].Title)
-		items[i].Description = decodeFeedEntities(items[i].Description)
-		items[i].Author = decodeFeedEntities(items[i].Author)
-	}
-
-	now := time.Now()
-	content, _ := json.Marshal(items)
-
-	err = q.UpsertFeed(ctx, dbgen.UpsertFeedParams{
-		Url: feedURL,
-		// Same treatment for the feed-level title to keep it consistent
-		// with the server-side fetch path.
-		Title:       decodeFeedEntities(title),
-		Content:     string(content),
-		LastFetched: &now,
-		LastError:   nil, // Clear any previous error
-		CreatedAt:   now,
-	})
-	return err
 }
 
 func stripHTML(s string) string {

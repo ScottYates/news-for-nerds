@@ -9,9 +9,9 @@ import "strings"
 // Threat model: the proxy endpoint embeds user-supplied CSS into a
 // <style> block in HTML served from the app's origin. The block can
 // be escaped with </style>, after which the attacker can inject
-// arbitrary HTML/JS. With sandbox="allow-same-origin" on the iframe
-// the proxy is loaded into, the JS has access to the app's cookies
-// and storage — a full account compromise via a crafted proxy URL.
+// arbitrary HTML/JS into the proxied page. Proxy responses are
+// sandboxed into an opaque origin (see proxyCSP), so this is a second
+// layer: it keeps the caller's CSS from rewriting the proxied page.
 //
 // Real CSS does not contain "</" (CSS has no nested tags, and
 // comments are CSS-context-only, no HTML overlap). URL data in

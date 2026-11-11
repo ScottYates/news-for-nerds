@@ -865,8 +865,8 @@ def test_json_body_cap(h: Harness, ctx: BrowserContext):
     fresh.add_cookies([{"name": "csrf", "value": "tok", "url": h.base}])
     big = "x" * (2 * 1024 * 1024)
     r = fresh.request.post(
-        f"{h.base}/api/feed/submit",
-        data=f'{{"url":"https://example.com","title":"{big}"}}',
+        f"{h.base}/api/visited",
+        data=f'{{"url":"https://example.com/{big}"}}',
         headers={"Content-Type": "application/json", "X-CSRF-Token": "tok"},
     )
     if r.status != 413:

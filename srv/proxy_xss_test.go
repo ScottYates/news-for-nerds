@@ -104,3 +104,45 @@ func TestHandleAPIProxy_SanitizesCustomCSS(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleAPIProxy_SandboxesEveryResponse checks that proxied
+// content is always served with a sandbox policy that omits
+// allow-same-origin. Without it, a link to /api/proxy?url=<attacker
+// page> would run the attacker's script in the app's own origin.
+func TestHandleAPIProxy_SandboxesEveryResponse(t *testing.T) {
+	types := []string{"text/html; charset=utf-8", "image/svg+xml", "application/xhtml+xml", "text/plain"}
+	for _, ct := range types {
+		t.Run(ct, func(t *testing.T) {
+			server, err := New(testConfig(testDBPath(t)), "test-host")
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			t.Cleanup(func() { server.DB.Close() })
+			server.proxyClient = &http.Client{
+				Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: 200,
+						Header:     http.Header{"Content-Type": []string{ct}},
+						Body:       io.NopCloser(strings.NewReader(`<html><head></head><body><script>alert(1)</script></body></html>`)),
+						Request:    req,
+					}, nil
+				}),
+			}
+
+			// Literal public IP: no DNS lookup in validateOutboundURL.
+			req := httptest.NewRequest(http.MethodGet, "/api/proxy?url=https://93.184.216.34/page", nil)
+			w := httptest.NewRecorder()
+			// Run behind the real header middleware to prove the
+			// handler's policy replaces the app default.
+			securityHeadersMiddleware(http.HandlerFunc(server.HandleAPIProxy)).ServeHTTP(w, req)
+
+			csp := w.Result().Header.Get("Content-Security-Policy")
+			if !strings.HasPrefix(csp, "sandbox ") {
+				t.Fatalf("proxy response CSP = %q, want a sandbox policy", csp)
+			}
+			if strings.Contains(csp, "allow-same-origin") {
+				t.Errorf("proxy response CSP must not contain allow-same-origin: %q", csp)
+			}
+		})
+	}
+}

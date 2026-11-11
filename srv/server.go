@@ -340,6 +340,11 @@ func (s *Server) HandleAPICreateWidget(w http.ResponseWriter, r *http.Request) {
 		input.Config = "{}"
 	}
 
+	if msg := validateWidgetFields(input.WidgetType, input.Config, input.BgColor, input.TextColor, input.HeaderColor); msg != "" {
+		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: msg})
+		return
+	}
+
 	widgetID := uuid.New().String()
 	now := time.Now()
 
@@ -366,6 +371,25 @@ func (s *Server) HandleAPICreateWidget(w http.ResponseWriter, r *http.Request) {
 
 	widget, _ := q.GetWidgetByID(r.Context(), widgetID)
 	s.writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: widget})
+}
+
+// validateWidgetFields checks the widget fields that the browser
+// later parses or places into the page. Empty colours are allowed
+// (the caller fills in defaults). It returns "" when everything is
+// acceptable, otherwise a message for the client.
+func validateWidgetFields(widgetType, config, bgColor, textColor, headerColor string) string {
+	if !validWidgetTypes[widgetType] {
+		return "invalid widget_type"
+	}
+	if !isJSONObject(config) {
+		return "config must be a JSON object"
+	}
+	for _, c := range []string{bgColor, textColor, headerColor} {
+		if c != "" && !isValidColor(c) {
+			return "colours must be hex values such as #16213e"
+		}
+	}
+	return ""
 }
 
 func (s *Server) HandleAPIUpdateWidget(w http.ResponseWriter, r *http.Request) {
@@ -407,6 +431,31 @@ func (s *Server) HandleAPIUpdateWidget(w http.ResponseWriter, r *http.Request) {
 		}
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid json"})
 		return
+	}
+
+	// Validate only the fields this request changes, so a widget that
+	// already holds a bad value can still be moved or repaired.
+	{
+		wtype, cfg, bg, text, header := "rss", "{}", "", "", ""
+		if input.WidgetType != nil {
+			wtype = *input.WidgetType
+		}
+		if input.Config != nil {
+			cfg = *input.Config
+		}
+		if input.BgColor != nil {
+			bg = *input.BgColor
+		}
+		if input.TextColor != nil {
+			text = *input.TextColor
+		}
+		if input.HeaderColor != nil {
+			header = *input.HeaderColor
+		}
+		if msg := validateWidgetFields(wtype, cfg, bg, text, header); msg != "" {
+			s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: msg})
+			return
+		}
 	}
 
 	// Apply updates
@@ -583,6 +632,9 @@ func (s *Server) HandleAPIImportWidgets(w http.ResponseWriter, r *http.Request) 
 			}
 			configJSON, _ := json.Marshal(configMap)
 			bgColor := ps.BgColor
+			if !isValidColor(bgColor) {
+				bgColor = s.Config.DefaultBgColor
+			}
 			bgImage := ps.BgImage
 			_ = qtx.UpdatePage(r.Context(), dbgen.UpdatePageParams{
 				Name:      page.Name,
@@ -630,16 +682,19 @@ func (s *Server) HandleAPIImportWidgets(w http.ResponseWriter, r *http.Request) 
 		if height == 0 {
 			height = 400
 		}
+		if !validWidgetTypes[wtype] {
+			wtype = "rss"
+		}
 		bgColor := iw.BgColor
-		if bgColor == "" {
+		if !isValidColor(bgColor) {
 			bgColor = s.Config.DefaultWidgetBg
 		}
 		textColor := iw.TextColor
-		if textColor == "" {
+		if !isValidColor(textColor) {
 			textColor = s.Config.DefaultWidgetText
 		}
 		headerColor := iw.HeaderColor
-		if headerColor == "" {
+		if !isValidColor(headerColor) {
 			headerColor = s.Config.DefaultWidgetHeader
 		}
 
@@ -656,6 +711,9 @@ func (s *Server) HandleAPIImportWidgets(w http.ResponseWriter, r *http.Request) 
 					configStr = string(iw.Config)
 				}
 			}
+		}
+		if !isJSONObject(configStr) {
+			configStr = "{}"
 		}
 
 		err := qtx.CreateWidget(r.Context(), dbgen.CreateWidgetParams{
@@ -747,53 +805,6 @@ func (s *Server) HandleAPIRefreshFeed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	feed, err := s.GetFeedWithProxy(r.Context(), feedURL, proxy)
-	if err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
-		return
-	}
-
-	s.writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: feed})
-}
-
-// HandleAPISubmitFeed receives feed data fetched by the client and stores it
-func (s *Server) HandleAPISubmitFeed(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		URL   string     `json:"url"`
-		Title string     `json:"title"`
-		Items []FeedItem `json:"items"`
-	}
-	if err := decodeJSONBody(w, r, &input); err != nil {
-		// decodeJSONBody has already written a 413 response when the
-		// body overflows the cap; only emit 400 for genuine parse errors.
-		if _, ok := err.(*http.MaxBytesError); ok {
-			return
-		}
-		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid json"})
-		return
-	}
-
-	if input.URL == "" {
-		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "url required"})
-		return
-	}
-	// Validate the URL the client is submitting, even though we won't
-	// refetch it server-side. We persist the URL and may refresh it
-	// later via the background ticker, so the same SSRF protection
-	// applies.
-	if err := validateOutboundURL(input.URL); err != nil {
-		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid url: " + err.Error()})
-		return
-	}
-
-	// Store the feed data
-	err := s.StoreFeedFromClient(r.Context(), input.URL, input.Title, input.Items)
-	if err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
-		return
-	}
-
-	// Return the stored feed
-	feed, err := s.GetFeed(r.Context(), input.URL)
 	if err != nil {
 		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
 		return
@@ -935,6 +946,15 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid json"})
+		return
+	}
+
+	if input.BgColor != nil && *input.BgColor != "" && !isValidColor(*input.BgColor) {
+		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "bg_color must be a hex value such as #1a1a2e"})
+		return
+	}
+	if input.Config != nil && !isJSONObject(*input.Config) {
+		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "config must be a JSON object"})
 		return
 	}
 
@@ -1144,7 +1164,6 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/pages/{id}/check-slug", s.HandleAPICheckSlug)
 	mux.HandleFunc("GET /api/feed", s.HandleAPIGetFeed)
 	mux.HandleFunc("POST /api/feed/refresh", s.HandleAPIRefreshFeed)
-	mux.HandleFunc("POST /api/feed/submit", s.HandleAPISubmitFeed)
 	mux.HandleFunc("GET /api/favicon", s.HandleAPIGetFavicon)
 	mux.HandleFunc("GET /api/proxy", s.HandleAPIProxy)
 	mux.HandleFunc("POST /api/visited", s.HandleAPIMarkVisited)

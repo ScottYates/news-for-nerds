@@ -7,15 +7,15 @@ import (
 // securityHeadersMiddleware adds a baseline set of security-related
 // response headers. Defaults are tuned for this app: it serves
 // HTML pages, embeds iframe widgets from arbitrary user-supplied
-// URLs (proxied through /api/proxy), and includes inline scripts
-// in proxied HTML, so the CSP is set up to allow that while
-// still blocking the worst of the standard attack surface.
+// URLs (proxied through /api/proxy). Proxied responses carry their
+// own sandbox policy (see proxyCSP), so this policy only has to fit
+// the app's own pages: no inline scripts, inline styles allowed.
 //
 // Defaults:
 //
 //   - Content-Security-Policy:
 //       default-src 'self';
-//       script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com;
+//       script-src 'self' https://cdnjs.cloudflare.com;
 //                                          // TinyMCE editor
 //       style-src  'self' 'unsafe-inline';  // per-widget inline styles
 //       img-src    'self' data:;            // data: URLs for favicons
@@ -42,7 +42,7 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 		h := w.Header()
 		setIfMissing(h, "Content-Security-Policy",
 			"default-src 'self'; "+
-				"script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "+
+				"script-src 'self' https://cdnjs.cloudflare.com; "+
 				"style-src 'self' 'unsafe-inline'; "+
 				"img-src 'self' data:; "+
 				"font-src 'self' https://cdnjs.cloudflare.com; "+

@@ -106,7 +106,7 @@ func TestSecurityHeaders_CSPAllowsProxyAndInline(t *testing.T) {
 
 	csp := w.Result().Header.Get("Content-Security-Policy")
 	mustContain := []string{
-		"script-src 'self' 'unsafe-inline'",
+		"script-src 'self' https://cdnjs.cloudflare.com",
 		"style-src 'self' 'unsafe-inline'",
 		"img-src 'self' data:",
 		"frame-src *",

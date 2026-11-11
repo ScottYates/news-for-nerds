@@ -170,8 +170,8 @@ class NewsForNerds {
         if (color) {
             this.app.style.backgroundColor = color;
         }
-        if (image) {
-            this.app.style.backgroundImage = `url(${image})`;
+        if (image && /^https?:\/\//i.test(image)) {
+            this.app.style.backgroundImage = `url(${JSON.stringify(image)})`;
         } else {
             this.app.style.backgroundImage = 'none';
         }
@@ -213,6 +213,15 @@ class NewsForNerds {
     setupEventListeners() {
         // Handle messages from iframes
         window.addEventListener('message', (e) => {
+            // Only widget iframes on this page may use this channel.
+            // Proxied pages have an opaque origin, so the check is on
+            // the sending window, not on e.origin.
+            if (!this.isWidgetFrame(e.source)) return;
+            if (e.data && e.data.type === 'nfn-links') {
+                const pending = this.pendingLinkRequests && this.pendingLinkRequests.get(e.data.id);
+                if (pending) pending(Array.isArray(e.data.urls) ? e.data.urls : []);
+                return;
+            }
             if (e.data && e.data.type === 'nfn-get-visited') {
                 // Send visited links to the iframe that requested them
                 if (e.source) {
@@ -224,7 +233,7 @@ class NewsForNerds {
             } else if (e.data && e.data.type === 'nfn-link-clicked') {
                 // Track link click from iframe
                 const url = e.data.url;
-                if (url && !this.visitedLinks.has(url)) {
+                if (typeof url === 'string' && url.length <= 2048 && !this.visitedLinks.has(url)) {
                     this.visitedLinks.add(url);
                     // Save to server. Use fetchWithCSRF so the CSRF
                     // middleware on /api/visited accepts the POST
@@ -441,6 +450,39 @@ class NewsForNerds {
         });
     }
     
+    // True if win is the window of one of this page's widget iframes.
+    isWidgetFrame(win) {
+        if (!win) return false;
+        const frames = document.querySelectorAll('#widget-container .iframe-container iframe');
+        for (const frame of frames) {
+            if (frame.contentWindow === win) return true;
+        }
+        return false;
+    }
+
+    // Asks a proxied widget iframe for the links it contains. The frame
+    // is sandboxed into an opaque origin, so its document cannot be read
+    // directly; the script the proxy injects answers this message.
+    // Resolves with [] if the frame does not answer within a second.
+    getIframeLinks(iframe) {
+        return new Promise((resolve) => {
+            if (!iframe || !iframe.contentWindow) return resolve([]);
+            this.pendingLinkRequests = this.pendingLinkRequests || new Map();
+            this.linkRequestSeq = (this.linkRequestSeq || 0) + 1;
+            const id = this.linkRequestSeq;
+            const timer = setTimeout(() => {
+                this.pendingLinkRequests.delete(id);
+                resolve([]);
+            }, 1000);
+            this.pendingLinkRequests.set(id, (urls) => {
+                clearTimeout(timer);
+                this.pendingLinkRequests.delete(id);
+                resolve(urls.filter(u => typeof u === 'string'));
+            });
+            iframe.contentWindow.postMessage({ type: 'nfn-list-links', id }, '*');
+        });
+    }
+
     async markAllAsRead(widgetId) {
         const widget = this.widgets.get(widgetId);
         if (!widget) return;
@@ -452,21 +494,13 @@ class NewsForNerds {
         
         if (widget.widget_type === 'iframe') {
             // For iframe widgets, get links from the iframe content
-            const iframe = el.querySelector('iframe');
-            if (iframe && iframe.contentDocument) {
-                try {
-                    const links = iframe.contentDocument.querySelectorAll('a[href]');
-                    links.forEach(link => {
-                        const url = link.href;
-                        if (url && !this.visitedLinks.has(url)) {
-                            urls.push(url);
-                            this.visitedLinks.add(url);
-                        }
-                    });
-                } catch (e) {
-                    console.warn('Cannot access iframe content:', e);
+            const links = await this.getIframeLinks(el.querySelector('iframe'));
+            links.forEach(url => {
+                if (url && !this.visitedLinks.has(url)) {
+                    urls.push(url);
+                    this.visitedLinks.add(url);
                 }
-            }
+            });
         } else {
             // Get all feed items in this widget
             const feedItems = el.querySelectorAll('.feed-item');
@@ -495,7 +529,7 @@ class NewsForNerds {
         
         // Reload iframe to reflect visited state with updated visited links
         if (widget.widget_type === 'iframe' && urls.length > 0) {
-            const config = JSON.parse(widget.config || '{}');
+            const config = this.parseConfig(widget.config);
             this.loadIframe(widgetId, config);
         }
         
@@ -513,21 +547,13 @@ class NewsForNerds {
         
         if (widget.widget_type === 'iframe') {
             // For iframe widgets, get links from the iframe content
-            const iframe = el.querySelector('iframe');
-            if (iframe && iframe.contentDocument) {
-                try {
-                    const links = iframe.contentDocument.querySelectorAll('a[href]');
-                    links.forEach(link => {
-                        const url = link.href;
-                        if (url && this.visitedLinks.has(url)) {
-                            urls.push(url);
-                            this.visitedLinks.delete(url);
-                        }
-                    });
-                } catch (e) {
-                    console.warn('Cannot access iframe content:', e);
+            const links = await this.getIframeLinks(el.querySelector('iframe'));
+            links.forEach(url => {
+                if (url && this.visitedLinks.has(url)) {
+                    urls.push(url);
+                    this.visitedLinks.delete(url);
                 }
-            }
+            });
         } else {
             // Get all visited feed items in this widget
             const feedItems = el.querySelectorAll('.feed-item.visited');
@@ -556,7 +582,7 @@ class NewsForNerds {
         
         // Reload iframe to reflect visited state with updated visited links
         if (widget.widget_type === 'iframe') {
-            const config = JSON.parse(widget.config || '{}');
+            const config = this.parseConfig(widget.config);
             this.loadIframe(widgetId, config);
         }
         
@@ -623,10 +649,10 @@ class NewsForNerds {
         el.style.top = `${widget.pos_y}px`;
         el.style.width = `${widget.width}px`;
         el.style.height = `${widget.height}px`;
-        el.style.backgroundColor = widget.bg_color || '#16213e';
-        el.style.color = widget.text_color || '#ffffff';
+        el.style.backgroundColor = this.safeColor(widget.bg_color, '#16213e');
+        el.style.color = this.safeColor(widget.text_color, '#ffffff');
 
-        const config = JSON.parse(widget.config || '{}');
+        const config = this.parseConfig(widget.config);
         const isIframe = widget.widget_type === 'iframe';
         const isHtml = widget.widget_type === 'html';
         const isRss = !isIframe && !isHtml;
@@ -658,7 +684,7 @@ class NewsForNerds {
         ` : '';
 
         el.innerHTML = `
-            <div class="widget-header" style="background-color: ${widget.header_color || '#0f3460'}">
+            <div class="widget-header">
                 <img class="widget-favicon" src="" alt="" style="display: none;">
                 <span class="widget-title">${this.escapeHtml(widget.title)}</span>
                 <div class="widget-actions">
@@ -671,6 +697,10 @@ class NewsForNerds {
             ${resizeHandles}
         `;
         
+        // Set through the style property, never through the HTML string:
+        // this value is shown to every viewer of a shared page.
+        el.querySelector('.widget-header').style.backgroundColor = this.safeColor(widget.header_color, '#0f3460');
+
         if (isLocked) {
             el.classList.add('locked');
         }
@@ -745,6 +775,18 @@ class NewsForNerds {
         }
     }
     
+    // Parses a widget or page config string. A value that is not a
+    // JSON object yields {} so one bad row cannot stop the dashboard.
+    parseConfig(raw) {
+        try {
+            const parsed = JSON.parse(raw || '{}');
+            return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+        } catch (e) {
+            console.warn('Ignoring invalid config:', e);
+            return {};
+        }
+    }
+
     async loadFavicon(widgetId, url) {
         if (!url) return;
         
@@ -776,7 +818,27 @@ class NewsForNerds {
             return;
         }
         
-        body.innerHTML = `<div class="html-content">${config.html_content}</div>`;
+        // The content is the page owner's own HTML and is shown to every
+        // viewer of a shared page. Render it in a sandboxed frame with no
+        // script execution and an opaque origin, so it can lay out text,
+        // links and images but cannot act as the viewer.
+        const widget = this.widgets.get(widgetId);
+        const textColor = this.safeColor(widget && widget.text_color, '#ffffff');
+        const frame = document.createElement('iframe');
+        frame.className = 'html-content-frame';
+        frame.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox');
+        frame.setAttribute('referrerpolicy', 'no-referrer');
+        frame.srcdoc = `<!DOCTYPE html><html><head><meta charset="utf-8"><base target="_blank">
+<style>
+html, body { margin: 0; background: transparent; }
+body { padding: 15px; line-height: 1.5; color: ${textColor}; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; word-wrap: break-word; }
+h1, h2, h3 { margin-top: 0; margin-bottom: 0.5em; }
+p { margin-bottom: 1em; }
+a { color: #e94560; }
+img { max-width: 100%; height: auto; }
+</style></head><body>${config.html_content}</body></html>`;
+        body.innerHTML = '';
+        body.appendChild(frame);
     }
     
     loadIframe(widgetId, config) {
@@ -789,8 +851,8 @@ class NewsForNerds {
         }
         
         const hideScrollbars = config.hide_scrollbars ? 'hide-scrollbars' : '';
-        const offsetX = config.offset_x || 0;
-        const offsetY = config.offset_y || 0;
+        const offsetX = Number(config.offset_x) || 0;
+        const offsetY = Number(config.offset_y) || 0;
         const iframeCss = config.iframe_css || '';
         
         // Calculate iframe size - make it larger if hiding scrollbars
@@ -806,7 +868,7 @@ class NewsForNerds {
             <div class="iframe-container ${hideScrollbars}">
                 <iframe 
                     src="${proxyUrl}"
-                    sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms allow-top-navigation-by-user-activation"
+                    sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms"
                     style="left: ${offsetX}px; top: ${offsetY}px; width: calc(100% + ${extraSize}px - ${offsetX}px); height: calc(100% + ${extraSize}px - ${offsetY}px);"
                     loading="lazy"
                 ></iframe>
@@ -999,11 +1061,11 @@ class NewsForNerds {
             if (result.success && result.data) {
                 const feed = result.data;
 
-                // If server failed to fetch and asks client to try
-                if (feed.client_fetch_url && (!feed.items || feed.items.length === 0)) {
-                    body.innerHTML = '<div class="feed-loading">Server fetch failed, trying from browser...</div>';
+                // The server could not fetch this feed and has nothing
+                // cached. Show that and stop; the refresh button retries.
+                if (feed.error && (!feed.items || feed.items.length === 0)) {
                     clearTimeout(timeoutId);
-                    await this.fetchFeedFromClient(widgetId, feed.client_fetch_url, showPreview, maxItems);
+                    body.innerHTML = '<div class="feed-empty">Could not load this feed. Check the URL, or use refresh to try again.</div>';
                     return;
                 }
 
@@ -1046,7 +1108,7 @@ class NewsForNerds {
                         return `
                         <div class="feed-item${compactClass}${visitedClass}" data-link="${this.escapeHtml(item.link)}">
                             <div class="feed-item-title">
-                                <a href="${this.escapeHtml(item.link)}" target="_blank" rel="noopener">
+                                <a href="${this.escapeHtml(this.safeUrl(item.link))}" target="_blank" rel="noopener noreferrer">
                                     ${this.escapeHtml(item.title)}
                                 </a>
                             </div>
@@ -1189,12 +1251,12 @@ class NewsForNerds {
             // the HN discussion.
             return `
                 <div class="hn-item${visitedClass}" data-link="${this.escapeHtml(it.link)}">
-                    <a class="hn-meta" href="${this.escapeHtml(it.commentLink)}" target="_blank" rel="noopener" title="View comments">
-                        <span class="hn-col hn-col-comments">${it.comments || ''}</span>
-                        <span class="hn-col hn-col-points">${it.points || ''}</span>
+                    <a class="hn-meta" href="${this.escapeHtml(this.safeUrl(it.commentLink))}" target="_blank" rel="noopener noreferrer" title="View comments">
+                        <span class="hn-col hn-col-comments">${Number(it.comments) || ''}</span>
+                        <span class="hn-col hn-col-points">${Number(it.points) || ''}</span>
                     </a>
                     <div class="hn-title">
-                        <a href="${this.escapeHtml(it.link)}" target="_blank" rel="noopener">${this.escapeHtml(it.title)}</a>${siteHtml}
+                        <a href="${this.escapeHtml(this.safeUrl(it.link))}" target="_blank" rel="noopener noreferrer">${this.escapeHtml(it.title)}</a>${siteHtml}
                     </div>
                 </div>`;
         };
@@ -1287,151 +1349,6 @@ class NewsForNerds {
         });
     }
 
-    // Fetch feed directly from the browser and submit to server
-    async fetchFeedFromClient(widgetId, feedUrl, showPreview = true, maxItems = 0) {
-        const el = document.getElementById(`widget-${widgetId}`);
-        const body = el.querySelector('.widget-body');
-
-        try {
-            // Fetch the feed XML directly from the browser
-            const response = await this.fetchWithCSRF(feedUrl);
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-            }
-            const text = await response.text();
-            
-            // Parse the RSS/Atom feed
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(text, 'text/xml');
-            
-            // Check for parse errors
-            const parseError = doc.querySelector('parsererror');
-            if (parseError) {
-                throw new Error('Failed to parse feed XML');
-            }
-            
-            // Extract feed data (handle both RSS and Atom)
-            let title = '';
-            let items = [];
-            
-            // Try RSS format first
-            const channel = doc.querySelector('channel');
-            if (channel) {
-                title = channel.querySelector('title')?.textContent || '';
-                const rssItems = channel.querySelectorAll('item');
-                rssItems.forEach((item, i) => {
-                    if (i >= 50) return; // Limit items
-                    const itemTitle = item.querySelector('title')?.textContent || '';
-                    const link = item.querySelector('link')?.textContent || '';
-                    const description = item.querySelector('description')?.textContent || '';
-                    const pubDate = item.querySelector('pubDate')?.textContent || '';
-                    const author = item.querySelector('author')?.textContent || 
-                                   item.querySelector('dc\\:creator')?.textContent || '';
-                    
-                    items.push({
-                        title: itemTitle,
-                        link: link,
-                        description: this.truncateText(this.stripHtml(description), 300),
-                        published: pubDate ? new Date(pubDate).toISOString() : '',
-                        author: author
-                    });
-                });
-            } else {
-                // Try Atom format
-                const feed = doc.querySelector('feed');
-                if (feed) {
-                    title = feed.querySelector('title')?.textContent || '';
-                    const entries = feed.querySelectorAll('entry');
-                    entries.forEach((entry, i) => {
-                        if (i >= 50) return; // Limit items
-                        const itemTitle = entry.querySelector('title')?.textContent || '';
-                        const linkEl = entry.querySelector('link[rel="alternate"]') || entry.querySelector('link');
-                        const link = linkEl?.getAttribute('href') || '';
-                        const summary = entry.querySelector('summary')?.textContent || 
-                                       entry.querySelector('content')?.textContent || '';
-                        const published = entry.querySelector('published')?.textContent || 
-                                         entry.querySelector('updated')?.textContent || '';
-                        const author = entry.querySelector('author name')?.textContent || '';
-                        
-                        items.push({
-                            title: itemTitle,
-                            link: link,
-                            description: this.truncateText(this.stripHtml(summary), 300),
-                            published: published,
-                            author: author
-                        });
-                    });
-                }
-            }
-            
-            if (items.length === 0) {
-                body.innerHTML = '<div class="feed-empty">Could not parse feed</div>';
-                return;
-            }
-            
-            // Submit to server for caching
-            await this.fetchWithCSRF('/api/feed/submit', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    url: feedUrl,
-                    title: title,
-                    items: items
-                })
-            });
-            
-            // Display the feed
-            if (maxItems > 0) {
-                items = items.slice(0, maxItems);
-            }
-            
-            const compactClass = showPreview ? '' : ' compact';
-            body.innerHTML = items.map(item => {
-                const visitedClass = this.visitedLinks.has(item.link) ? ' visited' : '';
-                return `
-                <div class="feed-item${compactClass}${visitedClass}" data-link="${this.escapeHtml(item.link)}">
-                    <div class="feed-item-title">
-                        <a href="${this.escapeHtml(item.link)}" target="_blank" rel="noopener">
-                            ${this.escapeHtml(item.title)}
-                        </a>
-                    </div>
-                    ${item.published ? `<div class="feed-item-meta">${this.formatDate(item.published)}</div>` : ''}
-                    ${showPreview && item.description ? `<div class="feed-item-description">${this.escapeHtml(item.description)}</div>` : ''}
-                </div>
-            `}).join('');
-            
-            // Add click handlers
-            body.querySelectorAll('.feed-item a').forEach(link => {
-                link.addEventListener('mousedown', (e) => {
-                    if (e.button === 0 || e.button === 1) {
-                        const feedItem = link.closest('.feed-item');
-                        const url = feedItem.dataset.link;
-                        feedItem.classList.add('visited');
-                        this.markLinkVisited(url);
-                    }
-                });
-            });
-            
-            // Load favicon
-            this.loadFavicon(widgetId, feedUrl);
-            
-        } catch (error) {
-            console.warn('Client-side feed fetch failed:', error);
-            body.innerHTML = `<div class="feed-empty">Failed to fetch feed: ${this.escapeHtml(error.message)}</div>`;
-        }
-    }
-
-    stripHtml(html) {
-        const tmp = document.createElement('div');
-        tmp.innerHTML = html;
-        return tmp.textContent || tmp.innerText || '';
-    }
-
-    truncateText(text, maxLen) {
-        if (text.length <= maxLen) return text;
-        return text.substring(0, maxLen) + '...';
-    }
-    
     async toggleWidgetLock(widgetId) {
         const widget = this.widgets.get(widgetId);
         if (!widget) return;
@@ -1445,7 +1362,7 @@ class NewsForNerds {
             height: el.offsetHeight
         } : {};
         
-        const config = JSON.parse(widget.config || '{}');
+        const config = this.parseConfig(widget.config);
         config.locked = !config.locked;
         
         try {
@@ -1511,7 +1428,7 @@ class NewsForNerds {
         const widget = this.widgets.get(widgetId);
         if (!widget) return;
 
-        const config = JSON.parse(widget.config || '{}');
+        const config = this.parseConfig(widget.config);
         if (!config.feed_url) return;
 
         const el = document.getElementById(`widget-${widgetId}`);
@@ -1542,7 +1459,7 @@ class NewsForNerds {
         if (!widget) return;
 
         this.editingWidgetId = widgetId;
-        const config = JSON.parse(widget.config || '{}');
+        const config = this.parseConfig(widget.config);
 
         document.getElementById('widget-modal-title').textContent = 'Widget Settings';
         document.getElementById('widget-type').value = widget.widget_type || 'rss';
@@ -1602,7 +1519,7 @@ class NewsForNerds {
         
         // Get existing config to preserve fields not in the form
         const widget = this.widgets.get(this.editingWidgetId);
-        let config = widget ? JSON.parse(widget.config || '{}') : {};
+        let config = widget ? this.parseConfig(widget.config) : {};
         config.hide_scrollbars = hideScrollbars;
         
         if (widgetType === 'rss') {
@@ -1797,7 +1714,7 @@ class NewsForNerds {
         const widget = this.widgets.get(widgetId);
         if (!widget) return;
         
-        const config = JSON.parse(widget.config || '{}');
+        const config = this.parseConfig(widget.config);
         this.editingWidgetId = widgetId;
         
         // Destroy existing TinyMCE instance if any
@@ -1852,7 +1769,7 @@ class NewsForNerds {
         
         const content = this.getEditorContent();
         
-        const config = JSON.parse(widget.config || '{}');
+        const config = this.parseConfig(widget.config);
         config.html_content = content;
         
         try {
@@ -2225,11 +2142,31 @@ class NewsForNerds {
         return match ? decodeURIComponent(match[2]) : '';
     }
 
+    // Escapes text for use in HTML content and in quoted attribute
+    // values. Quotes must be escaped too: most call sites place the
+    // result inside href="..." or data-link="...".
     escapeHtml(str) {
-        if (!str) return '';
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
+        if (str === null || str === undefined || str === '') return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    // Returns url if it is an absolute http(s) URL, otherwise '#'.
+    // Feed content is written by third parties; a javascript: or data:
+    // link must never become an href.
+    safeUrl(url) {
+        if (typeof url !== 'string') return '#';
+        const trimmed = url.trim();
+        return /^https?:\/\//i.test(trimmed) ? trimmed : '#';
+    }
+
+    // Returns color if it is a hex colour, otherwise fallback.
+    safeColor(color, fallback) {
+        return (typeof color === 'string' && /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(color)) ? color : fallback;
     }
 
     async checkAuthStatus() {
@@ -2259,7 +2196,7 @@ class NewsForNerds {
                         loginBtn.title = 'Login with Google for profile picture';
                         loginBtn.classList.remove('hidden');
                         loginBtn.addEventListener('click', () => {
-                            window.location.href = '/auth/login?return=' + encodeURIComponent(window.location.href);
+                            window.location.href = '/auth/login?return=' + encodeURIComponent(window.location.pathname);
                         });
                     } else {
                         loginBtn.classList.add('hidden');
@@ -2286,7 +2223,7 @@ class NewsForNerds {
                 loginBtn.classList.remove('hidden');
                 avatar.classList.add('hidden');
                 loginBtn.addEventListener('click', () => {
-                    window.location.href = '/auth/login?return=' + encodeURIComponent(window.location.href);
+                    window.location.href = '/auth/login?return=' + encodeURIComponent(window.location.pathname);
                 });
             }
             // If OAuth not enabled, hide both
@@ -2308,12 +2245,12 @@ class NewsForNerds {
         
         let loginWithGoogleBtn = '';
         if (authType === 'exedev' && oauthEnabled) {
-            loginWithGoogleBtn = `<button class="user-dropdown-item" onclick="window.location.href='/auth/login?return=' + encodeURIComponent(window.location.href)">Login with Google</button>`;
+            loginWithGoogleBtn = `<button class="user-dropdown-item" data-action="login">Login with Google</button>`;
         }
         
         let logoutBtn = '';
         if (authType === 'google') {
-            logoutBtn = `<button class="user-dropdown-item" onclick="window.location.href='/auth/logout'">Logout</button>`;
+            logoutBtn = `<button class="user-dropdown-item" data-action="logout">Logout</button>`;
         }
         
         dropdown.innerHTML = `
@@ -2325,6 +2262,15 @@ class NewsForNerds {
             ${logoutBtn}
         `;
         
+        // Listeners instead of inline onclick: the Content-Security-Policy
+        // does not allow inline script.
+        dropdown.querySelector('[data-action="login"]')?.addEventListener('click', () => {
+            window.location.href = '/auth/login?return=' + encodeURIComponent(window.location.pathname);
+        });
+        dropdown.querySelector('[data-action="logout"]')?.addEventListener('click', () => {
+            window.location.href = '/auth/logout';
+        });
+
         userMenu.style.position = 'relative';
         userMenu.appendChild(dropdown);
     }

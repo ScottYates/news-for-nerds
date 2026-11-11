@@ -842,7 +842,22 @@ body {
     height: auto;
 }
 
+/* While a widget is dragged or resized, frames must not swallow the
+   mouse events the drag handlers listen for on the document. */
+#widget-container:has(.widget.dragging) iframe,
+#widget-container:has(.widget.resizing) iframe {
+    pointer-events: none;
+}
+
 /* Iframe widget */
+.html-content-frame {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: transparent;
+}
+
 .iframe-container {
     width: 100%;
     height: 100%;

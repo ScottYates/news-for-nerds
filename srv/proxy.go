@@ -9,6 +9,10 @@ import (
 	"strings"
 )
 
+// proxyCSP is the Content-Security-Policy sent on every /api/proxy
+// response. No allow-same-origin: the document gets an opaque origin.
+const proxyCSP = "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox; frame-ancestors 'self'"
+
 // HandleAPIProxy proxies iframe content and injects <base target="_blank"> and optional CSS
 func (s *Server) HandleAPIProxy(w http.ResponseWriter, r *http.Request) {
 	targetURL := r.URL.Query().Get("url")
@@ -50,6 +54,14 @@ func (s *Server) HandleAPIProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+
+	// Everything this endpoint returns was written by a third party.
+	// The sandbox directive gives the response an opaque origin, also
+	// when the URL is opened directly instead of in a widget iframe, so
+	// its scripts cannot read the app's cookies or call the API as the
+	// visitor. This replaces the app's default policy, which would
+	// otherwise block the proxied page's own styles and images.
+	w.Header().Set("Content-Security-Policy", proxyCSP)
 
 	// Check content type
 	contentType := resp.Header.Get("Content-Type")
@@ -100,9 +112,14 @@ func (s *Server) HandleAPIProxy(w http.ResponseWriter, r *http.Request) {
 			
 			// Listen for visited links from parent
 			window.addEventListener('message', function(e) {
-				if (e.data && e.data.type === 'nfn-visited') {
+				if (e.source !== window.parent || !e.data) return;
+				if (e.data.type === 'nfn-visited') {
 					visitedSet = new Set(e.data.urls || []);
 					markAllVisited();
+				} else if (e.data.type === 'nfn-list-links') {
+					var urls = [];
+					document.querySelectorAll('a[href]').forEach(function(a) { urls.push(a.href); });
+					window.parent.postMessage({ type: 'nfn-links', id: e.data.id, urls: urls }, '*');
 				}
 			});
 			
