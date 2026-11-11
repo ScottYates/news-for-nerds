@@ -16,7 +16,10 @@
 > - The log file is not rotated by the app; use logrotate.
 >
 > Trust model: an HTML widget holds the page owner's own markup. It is shown
-> to viewers of a shared page inside a sandboxed frame with scripts disabled.
+> rendered in a div after sanitising with DOMPurify (vendored in
+> `srv/static/vendor/`): scripts, event handlers, forms, `<style>` blocks,
+> frames and non-http(s) URLs are removed, and CSS containment keeps the
+> content inside its widget.
 
 **Scope:** `srv/*.go` (handlers, auth, proxy, RSS/HN scrapers, favicon, templates), `srv/templates/dashboard.html`, `srv/static/app.js`, `go.mod`, `db/migrations/*.sql`.
 

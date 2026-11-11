@@ -825,28 +825,46 @@ class NewsForNerds {
         }
         
         // The content is the page owner's own HTML and is shown to every
-        // viewer of a shared page. Render it in a sandboxed frame with no
-        // script execution and an opaque origin, so it can lay out text,
-        // links and images but cannot act as the viewer.
-        const widget = this.widgets.get(widgetId);
-        const textColor = this.safeColor(widget && widget.text_color, '#ffffff');
-        const frame = document.createElement('iframe');
-        frame.className = 'html-content-frame';
-        frame.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox');
-        frame.setAttribute('referrerpolicy', 'no-referrer');
-        frame.srcdoc = `<!DOCTYPE html><html><head><meta charset="utf-8"><base target="_blank">
-<style>
-html, body { margin: 0; background: transparent; }
-body { padding: 15px; line-height: 1.5; color: ${textColor}; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; word-wrap: break-word; }
-h1, h2, h3 { margin-top: 0; margin-bottom: 0.5em; }
-p { margin-bottom: 1em; }
-a { color: #e94560; }
-img { max-width: 100%; height: auto; }
-</style></head><body>${config.html_content}</body></html>`;
+        // viewer of a shared page, so it is sanitised before it goes
+        // into the div: scripts, event handlers, forms, <style> blocks
+        // and script URLs are removed. The .html-content CSS keeps what
+        // remains inside the widget.
+        const content = document.createElement('div');
+        content.className = 'html-content';
+        const clean = this.sanitizeHtml(config.html_content);
+        if (clean === null) {
+            // Sanitiser not loaded: show the markup as text, never as HTML.
+            content.textContent = config.html_content;
+        } else {
+            content.appendChild(clean);
+        }
         body.innerHTML = '';
-        body.appendChild(frame);
+        body.appendChild(content);
     }
-    
+
+    // Returns a DocumentFragment holding the safe part of an HTML
+    // widget's markup, or null if DOMPurify is not available.
+    sanitizeHtml(html) {
+        if (typeof DOMPurify === 'undefined' || !DOMPurify.isSupported) return null;
+        if (!this._purifyReady) {
+            // Links open in a new tab and do not get a handle on this page.
+            DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+                // Inline styles are kept for colours and alignment. Drop
+                // any that try to run code or pull in other stylesheets.
+                if (node.hasAttribute && node.hasAttribute('style') &&
+                    /javascript:|expression\s*\(|@import|behavior\s*:|-moz-binding/i.test(node.getAttribute('style'))) {
+                    node.removeAttribute('style');
+                }
+                if (node.tagName === 'A' && node.hasAttribute('href')) {
+                    node.setAttribute('target', '_blank');
+                    node.setAttribute('rel', 'noopener noreferrer');
+                }
+            });
+            this._purifyReady = true;
+        }
+        return DOMPurify.sanitize(String(html), NewsForNerds.HTML_WIDGET_POLICY);
+    }
+
     loadIframe(widgetId, config) {
         const el = document.getElementById(`widget-${widgetId}`);
         const body = el.querySelector('.widget-body');
@@ -2333,6 +2351,32 @@ img { max-width: 100%; height: auto; }
         container.insertBefore(avatar, container.firstChild);
     }
 }
+
+// What an HTML widget may contain. DOMPurify's HTML profile already
+// drops scripts, event-handler attributes and javascript: URLs. On top
+// of that:
+//   - no <style>, <link>, <base> or <meta>: they would restyle or
+//     redirect the whole dashboard, not just the widget;
+//   - no forms or form controls: a shared page must not be able to ask
+//     a viewer for input;
+//   - no frames, objects or embeds;
+//   - no id or name attributes: the app finds its own controls by id,
+//     and widget markup comes earlier in the document;
+//   - URL schemes limited to http(s), mailto and data: images
+//     (relative URLs are allowed).
+NewsForNerds.HTML_WIDGET_POLICY = {
+    USE_PROFILES: { html: true },
+    FORBID_TAGS: ['style', 'link', 'base', 'meta', 'form', 'input', 'button', 'textarea', 'select', 'option',
+        'iframe', 'frame', 'object', 'embed', 'dialog', 'template', 'slot'],
+    FORBID_ATTR: ['id', 'name', 'srcset', 'action', 'formaction', 'ping', 'autofocus', 'contenteditable', 'tabindex'],
+    // DOMPurify tests every attribute value against this, not only
+    // URLs, so the last two alternatives (its own defaults) must stay:
+    // they accept values with no scheme, such as border="1".
+    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|data:image\/(?:png|gif|jpe?g|webp);base64,|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+    ALLOW_DATA_ATTR: false,
+    SANITIZE_NAMED_PROPS: true,
+    RETURN_DOM_FRAGMENT: true
+};
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
