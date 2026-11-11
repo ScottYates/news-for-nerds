@@ -33,15 +33,18 @@ func SetupLogging(logFile, logLevel string) (cleanup func(), err error) {
 
 	// Ensure log directory exists
 	logDir := filepath.Dir(logFile)
-	if err := os.MkdirAll(logDir, 0755); err != nil {
+	if err := os.MkdirAll(logDir, 0750); err != nil {
 		return nil, err
 	}
 
 	// Open log file (append, create if needed)
-	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	// Owner-only: the log holds user IDs, feed URLs and error details.
+	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return nil, err
 	}
+	// Tighten a file created by an earlier version with 0644.
+	_ = f.Chmod(0600)
 
 	// Write to both stderr and log file
 	multiWriter := io.MultiWriter(os.Stderr, f)

@@ -53,7 +53,7 @@ func (s *Server) HandleAPIProxy(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.proxyClient.Do(req)
 	if err != nil {
 		slog.Warn("proxy fetch failed", "url", targetURL, "error", err)
-		http.Error(w, "failed to fetch url: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, "failed to fetch url", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()

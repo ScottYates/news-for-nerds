@@ -31,6 +31,12 @@ import (
 func safeTransport(base *http.Transport) *http.Transport {
 	if base == nil {
 		base = http.DefaultTransport.(*http.Transport).Clone()
+		// Do not pick up HTTP(S)_PROXY from the environment. Through
+		// an environment proxy the dial below goes to the proxy, so
+		// the address check would apply to it and never to the
+		// target. A caller that wants a proxy passes a transport with
+		// Proxy set, and that proxy's address is what gets checked.
+		base.Proxy = nil
 	}
 	t := base.Clone()
 
@@ -65,7 +71,7 @@ func safeTransport(base *http.Transport) *http.Transport {
 		}
 		for _, ipa := range ips {
 			if isDeniedIP(ipa.IP) {
-				return nil, fmt.Errorf("dial %s blocked: %s resolves to denied address", addr, ipa.IP)
+				return nil, fmt.Errorf("dial %s blocked: host resolves to a denied address", addr)
 			}
 		}
 		// Pin to the first IP. The http.Transport will set the Host
@@ -110,6 +116,14 @@ func isDeniedIP(ip net.IP) bool {
 	// destination for a feed reader.
 	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
 		return true
+	}
+	// NAT64 (64:ff9b::/96) embeds an IPv4 address. On a network with a
+	// NAT64 gateway it reaches that IPv4 host, so judge it by the
+	// address inside.
+	if len(ip) == net.IPv6len && ip.To4() == nil &&
+		ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b &&
+		ip[4]|ip[5]|ip[6]|ip[7]|ip[8]|ip[9]|ip[10]|ip[11] == 0 {
+		return isDeniedIP(net.IPv4(ip[12], ip[13], ip[14], ip[15]))
 	}
 	// IPv6 unique local addresses (fc00::/7).
 	if len(ip) == net.IPv6len && (ip[0]&0xfe) == 0xfc {
@@ -157,14 +171,18 @@ func validateOutboundURL(rawURL string) error {
 	defer cancel()
 	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return fmt.Errorf("resolve %s: %w", host, err)
+		// The resolver's error names the DNS server it asked; keep
+		// that out of the message, which is shown to the caller.
+		return fmt.Errorf("could not resolve host %s", host)
 	}
 	if len(ips) == 0 {
 		return fmt.Errorf("host %s did not resolve", host)
 	}
 	for _, ipa := range ips {
 		if isDeniedIP(ipa.IP) {
-			return fmt.Errorf("url host %s resolves to denied address %s", host, ipa.IP)
+			// Do not say which address: that would let a caller map
+			// internal DNS names to internal IPs.
+			return fmt.Errorf("url host %s is in deny list", host)
 		}
 	}
 	return nil

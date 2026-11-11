@@ -1093,7 +1093,7 @@ img { max-width: 100%; height: auto; }
                 // layout (comments / points columns + muted source site,
                 // Top-N filters via peak points, and infinite scroll).
                 // The non-HN path stays simple: full render.
-                const isHN = /news\.ycombinator\.com/.test(feedUrl) && !/\/rss/.test(feedUrl);
+                const isHN = this.isHackerNewsUrl(feedUrl);
                 if (isHN) {
                     this.renderHackerNews(body, items, widgetConfig || {});
                 } else {
@@ -1122,6 +1122,17 @@ img { max-width: 100%; height: auto; }
         } catch (error) {
             // Keep showing "Loading..." or previous content - don't show error
             console.warn('Failed to fetch feed:', error);
+        }
+    }
+
+    // Same rule as the server's isHackerNewsURL: the host must be
+    // news.ycombinator.com and the path must not be the RSS feed.
+    isHackerNewsUrl(feedUrl) {
+        try {
+            const u = new URL(feedUrl);
+            return u.hostname.toLowerCase() === 'news.ycombinator.com' && !/\/rss/i.test(u.pathname);
+        } catch (e) {
+            return false;
         }
     }
 
@@ -2256,8 +2267,13 @@ img { max-width: 100%; height: auto; }
         dropdown.querySelector('[data-action="login"]')?.addEventListener('click', () => {
             window.location.href = '/auth/login?return=' + encodeURIComponent(window.location.pathname);
         });
-        dropdown.querySelector('[data-action="logout"]')?.addEventListener('click', () => {
-            window.location.href = '/auth/logout';
+        dropdown.querySelector('[data-action="logout"]')?.addEventListener('click', async () => {
+            try {
+                await this.fetchWithCSRF('/auth/logout', { method: 'POST' });
+            } catch (e) {
+                console.error('Logout failed:', e);
+            }
+            window.location.href = '/';
         });
 
         userMenu.style.position = 'relative';

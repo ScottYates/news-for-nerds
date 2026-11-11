@@ -40,12 +40,15 @@ var losAngeles = func() *time.Location {
 // HTML listing page (e.g. https://news.ycombinator.com/news) that we should
 // scrape directly rather than parse as RSS.
 func isHackerNewsURL(feedURL string) bool {
-	u := strings.ToLower(strings.TrimSpace(feedURL))
-	if !strings.Contains(u, "news.ycombinator.com") {
+	// Compare the parsed host. A substring test also matched URLs such
+	// as https://example.com/news.ycombinator.com, which were then
+	// crawled page after page as if they were Hacker News.
+	u, err := url.Parse(strings.TrimSpace(feedURL))
+	if err != nil || !strings.EqualFold(u.Hostname(), "news.ycombinator.com") {
 		return false
 	}
 	// The actual RSS feed lives at /rss - let gofeed handle that one.
-	if strings.Contains(u, "/rss") {
+	if strings.Contains(strings.ToLower(u.Path), "/rss") {
 		return false
 	}
 	return true

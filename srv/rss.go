@@ -360,7 +360,9 @@ func (s *Server) GetFeedWithProxy(ctx context.Context, feedURL string, proxy Pro
 	// widget can show it. The cache is only ever filled by the
 	// server's own fetch, never from data a client submits.
 	if len(items) == 0 && feed.LastError != nil && *feed.LastError != "" {
-		data.Error = *feed.LastError
+		// The stored text is the fetch library's raw error; the
+		// client only needs to know the fetch failed.
+		data.Error = "fetch failed"
 	}
 
 	return data, nil

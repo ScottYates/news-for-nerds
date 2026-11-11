@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -344,7 +345,8 @@ func (s *Server) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		MaxAge: -1,
 	})
 
-	http.Redirect(w, r, "/", http.StatusFound)
+	// Called with fetch() from the dashboard, which then navigates.
+	s.writeJSON(w, http.StatusOK, APIResponse{Success: true})
 }
 
 func (s *Server) exchangeCode(code, redirectURI string) (*GoogleTokenResponse, error) {
@@ -425,13 +427,46 @@ func (s *Server) GetUserFromRequest(r *http.Request) (*dbgen.GetSessionRow, erro
 		return nil, err
 	}
 
-	q := dbgen.New(s.DB)
-	session, err := q.GetSession(r.Context(), cookie.Value)
+	// Read the row and compare the expiry in Go. The generated query
+	// compares expires_at with SQLite's CURRENT_TIMESTAMP as text, and
+	// the two are formatted differently (local time with an offset
+	// against UTC), so that comparison is off by the server's UTC offset.
+	var session dbgen.GetSessionRow
+	err = s.DB.QueryRowContext(r.Context(),
+		`SELECT s.id, s.user_id, s.created_at, s.expires_at, u.email, u.name, u.picture
+		 FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.id = ?`,
+		cookie.Value,
+	).Scan(&session.ID, &session.UserID, &session.CreatedAt, &session.ExpiresAt,
+		&session.Email, &session.UserName, &session.Picture)
 	if err != nil {
 		return nil, err
 	}
+	if !session.ExpiresAt.After(time.Now()) {
+		return nil, errSessionExpired
+	}
 
 	return &session, nil
+}
+
+var errSessionExpired = errors.New("session expired")
+
+// startSessionCleanup deletes expired sessions once an hour. Nothing
+// removed them before, so the table only ever grew.
+func (s *Server) startSessionCleanup(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			if _, err := s.DB.ExecContext(ctx, "DELETE FROM sessions WHERE expires_at < ?", time.Now()); err != nil {
+				slog.Warn("failed to delete expired sessions", "error", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 }
 
 // exeDevUserID returns the user ID the exe.dev proxy put in the

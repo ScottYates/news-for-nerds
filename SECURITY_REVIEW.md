@@ -1,5 +1,23 @@
 # Security Review — NewsForNerds
 
+> **Status, 2026-11-11.** The findings in this document are from the August
+> 2026 review and describe the code as it was then. They have since been
+> fixed, along with the findings of a second review in November 2026 (script
+> injection through the proxy, feed links and shared pages; the feed-proxy
+> SSRF bypass; trust in `X-ExeDev-*` and `X-Forwarded-*` headers).
+>
+> Still open by choice:
+>
+> - Pages owned by a visitor cookie move to the Google account that logs in
+>   from the same browser (item 11 below).
+> - Accounts are keyed by email address, not by Google's account ID.
+> - `GET /` creates a page row for every new visitor, crawlers included.
+> - TinyMCE is loaded from cdnjs without an `integrity` attribute.
+> - The log file is not rotated by the app; use logrotate.
+>
+> Trust model: an HTML widget holds the page owner's own markup. It is shown
+> to viewers of a shared page inside a sandboxed frame with scripts disabled.
+
 **Scope:** `srv/*.go` (handlers, auth, proxy, RSS/HN scrapers, favicon, templates), `srv/templates/dashboard.html`, `srv/static/app.js`, `go.mod`, `db/migrations/*.sql`.
 
 **Date:** 2026-08-18

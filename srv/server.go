@@ -260,6 +260,14 @@ type APIResponse struct {
 	Error   string      `json:"error,omitempty"`
 }
 
+// serverError logs err and sends a 500 with a fixed message. Internal
+// error text (SQL errors, resolver output, file paths) stays in the
+// log and is not sent to the client.
+func (s *Server) serverError(w http.ResponseWriter, r *http.Request, err error) {
+	slog.Error("request failed", "method", r.Method, "path", r.URL.Path, "error", err)
+	s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: "internal error"})
+}
+
 func (s *Server) writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -286,7 +294,7 @@ func (s *Server) HandleAPIGetWidgets(w http.ResponseWriter, r *http.Request) {
 
 	widgets, err := q.GetWidgetsByPageID(r.Context(), pageID)
 	if err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		s.serverError(w, r, err)
 		return
 	}
 
@@ -379,7 +387,7 @@ func (s *Server) HandleAPICreateWidget(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:   now,
 	})
 	if err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		s.serverError(w, r, err)
 		return
 	}
 
@@ -519,7 +527,7 @@ func (s *Server) HandleAPIUpdateWidget(w http.ResponseWriter, r *http.Request) {
 		ID:          widgetID,
 	})
 	if err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		s.serverError(w, r, err)
 		return
 	}
 
@@ -548,7 +556,7 @@ func (s *Server) HandleAPIDeleteWidget(w http.ResponseWriter, r *http.Request) {
 
 	err = q.DeleteWidget(r.Context(), widgetID)
 	if err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		s.serverError(w, r, err)
 		return
 	}
 
@@ -604,7 +612,7 @@ func (s *Server) HandleAPIImportWidgets(w http.ResponseWriter, r *http.Request) 
 	// Do everything in a single transaction
 	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		s.serverError(w, r, err)
 		return
 	}
 	defer tx.Rollback()
@@ -613,7 +621,7 @@ func (s *Server) HandleAPIImportWidgets(w http.ResponseWriter, r *http.Request) 
 
 	// Delete all existing widgets for this page
 	if err := qtx.DeleteWidgetsByPageID(r.Context(), pageID); err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		s.serverError(w, r, err)
 		return
 	}
 
@@ -748,7 +756,7 @@ func (s *Server) HandleAPIImportWidgets(w http.ResponseWriter, r *http.Request) 
 		})
 		if err != nil {
 			slog.Error("failed to create widget during import", "error", err, "title", title)
-			s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: fmt.Sprintf("failed to create widget %q: %v", title, err)})
+			s.serverError(w, r, err)
 			return
 		}
 		// Build response widget
@@ -757,7 +765,7 @@ func (s *Server) HandleAPIImportWidgets(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := tx.Commit(); err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		s.serverError(w, r, err)
 		return
 	}
 
@@ -788,7 +796,7 @@ func (s *Server) HandleAPIGetFeed(w http.ResponseWriter, r *http.Request) {
 
 	feed, err := s.GetFeedWithProxy(r.Context(), feedURL, proxy)
 	if err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		s.serverError(w, r, err)
 		return
 	}
 
@@ -887,7 +895,7 @@ func (s *Server) HandleAPIRefreshFeed(w http.ResponseWriter, r *http.Request) {
 
 	feed, err := s.GetFeedWithProxy(r.Context(), feedURL, proxy)
 	if err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		s.serverError(w, r, err)
 		return
 	}
 
@@ -911,12 +919,19 @@ func (s *Server) HandleAPIGetFavicon(w http.ResponseWriter, r *http.Request) {
 
 	favicon, err := s.GetFavicon(r.Context(), url)
 	if err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		s.serverError(w, r, err)
 		return
 	}
 
 	s.writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: favicon})
 }
+
+const (
+	// maxVisitedURLLen is the longest link the visited list stores.
+	maxVisitedURLLen = 2048
+	// maxVisitedLinksPerUser bounds one user's visited list.
+	maxVisitedLinksPerUser = 5000
+)
 
 func (s *Server) HandleAPIMarkVisited(w http.ResponseWriter, r *http.Request) {
 	userID := s.GetUserID(r)
@@ -934,16 +949,31 @@ func (s *Server) HandleAPIMarkVisited(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := dbgen.New(s.DB)
-	err := q.MarkLinkVisited(r.Context(), dbgen.MarkLinkVisitedParams{
-		UserID:    userID,
-		LinkUrl:   input.URL,
-		VisitedAt: time.Now(),
-	})
-	if err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+	if len(input.URL) > maxVisitedURLLen || safeLinkURL(input.URL) == "" {
+		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "url must be an http(s) URL"})
 		return
 	}
+	// Callers with no cookie identity share the "anonymous" ID; there
+	// is nothing useful to remember for them.
+	if userID == "anonymous" {
+		s.writeJSON(w, http.StatusOK, APIResponse{Success: true})
+		return
+	}
+
+	now := time.Now()
+	_, err := s.DB.ExecContext(r.Context(),
+		`INSERT INTO visited_links (user_id, link_url, visited_at) VALUES (?, ?, ?)
+		 ON CONFLICT(user_id, link_url) DO UPDATE SET visited_at = excluded.visited_at`,
+		userID, input.URL, now)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	// Keep each user's list bounded: drop the oldest rows beyond the cap.
+	_, _ = s.DB.ExecContext(r.Context(),
+		`DELETE FROM visited_links WHERE user_id = ? AND id NOT IN (
+		   SELECT id FROM visited_links WHERE user_id = ? ORDER BY visited_at DESC, id DESC LIMIT ?)`,
+		userID, userID, maxVisitedLinksPerUser)
 
 	s.writeJSON(w, http.StatusOK, APIResponse{Success: true})
 }
@@ -963,7 +993,7 @@ func (s *Server) HandleAPIGetVisitedLinks(w http.ResponseWriter, r *http.Request
 		VisitedAt: cutoff,
 	})
 	if err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		s.serverError(w, r, err)
 		return
 	}
 
@@ -992,7 +1022,7 @@ func (s *Server) HandleAPIUnmarkVisited(w http.ResponseWriter, r *http.Request) 
 		Urls:   input.URLs,
 	})
 	if err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		s.serverError(w, r, err)
 		return
 	}
 
@@ -1070,7 +1100,7 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 				ID:   pageID,
 			})
 			if err != nil {
-				s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+				s.serverError(w, r, err)
 				return
 			}
 			if count > 0 {
@@ -1087,7 +1117,7 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 			ID:        pageID,
 		})
 		if err != nil {
-			s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+			s.serverError(w, r, err)
 			return
 		}
 	}
@@ -1104,7 +1134,7 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 			ID:        pageID,
 		})
 		if err != nil {
-			s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+			s.serverError(w, r, err)
 			return
 		}
 	}
@@ -1121,7 +1151,7 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 			ID:         pageID,
 		})
 		if err != nil {
-			s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+			s.serverError(w, r, err)
 			return
 		}
 	}
@@ -1135,7 +1165,7 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 		ID:        pageID,
 	})
 	if err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		s.serverError(w, r, err)
 		return
 	}
 
@@ -1175,7 +1205,7 @@ func (s *Server) HandleAPICheckSlug(w http.ResponseWriter, r *http.Request) {
 		ID:   pageID,
 	})
 	if err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		s.serverError(w, r, err)
 		return
 	}
 
@@ -1228,7 +1258,9 @@ func (s *Server) Serve(addr string) error {
 	// Auth routes
 	mux.HandleFunc("GET /auth/login", s.HandleLogin)
 	mux.HandleFunc("GET /auth/callback", s.HandleCallback)
-	mux.HandleFunc("GET /auth/logout", s.HandleLogout)
+	// Logout changes state, so it is a POST and goes through the CSRF
+	// check. As a GET, any page could log a visitor out with an <img>.
+	mux.HandleFunc("POST /auth/logout", s.HandleLogout)
 	mux.HandleFunc("GET /api/auth/status", s.HandleAuthStatus)
 
 	// Pages
@@ -1259,6 +1291,7 @@ func (s *Server) Serve(addr string) error {
 	// Start feed refresher
 	ctx := context.Background()
 	s.StartFeedRefresher(ctx)
+	s.startSessionCleanup(ctx)
 
 	slog.Info("starting server",
 		"addr", addr,
@@ -1283,7 +1316,9 @@ func (s *Server) Serve(addr string) error {
 	// by the rest of the stack.
 	handler = securityHeadersMiddleware(handler)
 	handler = csrfMiddleware(
-		[]string{"/auth/", "/api/proxy"},
+		// No exemptions: every route under /auth/ and /api/proxy that
+		// was exempt is a GET, which the middleware never checks.
+		nil,
 		// The CSRF cookie's Secure flag follows the request: set when
 		// the request came in over TLS (r.TLS != nil) or when a
 		// trusted reverse proxy reports X-Forwarded-Proto: https.
