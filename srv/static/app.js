@@ -596,7 +596,13 @@ class NewsForNerds {
             
             if (result.success && result.data) {
                 for (const widget of result.data) {
-                    this.renderWidget(widget);
+                    // One widget that fails to render must not stop
+                    // the ones after it.
+                    try {
+                        this.renderWidget(widget);
+                    } catch (e) {
+                        console.error('Failed to render widget', widget && widget.id, e);
+                    }
                 }
                 // Update background bounds after all widgets loaded
                 this.updateContentBounds();
@@ -1043,7 +1049,7 @@ img { max-width: 100%; height: auto; }
         // Set a 3-second timeout to force refresh if still loading
         const timeoutId = setTimeout(() => {
             if (body.querySelector('.feed-loading')) {
-                fetch(`/api/feed/refresh?url=${encodeURIComponent(feedUrl)}${proxyParam}`, { method: 'POST' })
+                this.fetchWithCSRF(`/api/feed/refresh?url=${encodeURIComponent(feedUrl)}${proxyParam}`, { method: 'POST' })
                     .then(() => this.loadFeed(widgetId, feedUrl, showPreview, maxItems, widgetConfig))
                     .catch(() => {});
             }
@@ -1116,8 +1122,16 @@ img { max-width: 100%; height: auto; }
                 // setupLinkTracking, so it works for items appended later
                 // by infinite-scroll chunks as well as the initial render.
             } else {
-                // Keep showing "Loading..." or previous content - don't show error
                 console.warn('Feed response unsuccessful:', result);
+                // A 4xx carries a reason the owner can act on (bad feed
+                // URL, feed proxy refused, rate limit). Show it and stop
+                // the forced-refresh timer; other failures keep the
+                // current content.
+                if (response.status >= 400 && response.status < 500) {
+                    clearTimeout(timeoutId);
+                    const reason = response.status === 429 ? 'Too many requests. Try again in a minute.' : (result.error || 'request refused');
+                    body.innerHTML = `<div class="feed-empty">Could not load this feed: ${this.escapeHtml(reason)}</div>`;
+                }
             }
         } catch (error) {
             // Keep showing "Loading..." or previous content - don't show error
@@ -1844,7 +1858,13 @@ img { max-width: 100%; height: auto; }
     }
     
     async saveToolbarState(collapsed) {
+        // Only the owner can save, and viewers do not hold the full
+        // config (the proxy fields are withheld from them).
+        if (!this.isOwner) return;
         try {
+            // Send every config field. The server replaces the whole
+            // config, so a field left out here is erased; the proxy
+            // settings used to be lost this way.
             const config = JSON.stringify({
                 grid_size: this.gridSize,
                 show_grid: this.showGrid,
@@ -1852,7 +1872,10 @@ img { max-width: 100%; height: auto; }
                 item_padding: this.itemPadding,
                 text_brightness: this.textBrightness,
                 toolbar_collapsed: collapsed,
-                auto_refresh: this.autoRefresh
+                auto_refresh: this.autoRefresh,
+                proxy_url: this.proxyUrl,
+                proxy_user: this.proxyUser,
+                proxy_pass: this.proxyPass
             });
             await this.fetchWithCSRF(`/api/pages/${this.pageId}`, {
                 method: 'PATCH',

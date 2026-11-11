@@ -141,20 +141,7 @@ func (s *Server) HandleAPIProxy(w http.ResponseWriter, r *http.Request) {
 		})();
 		</script>`
 		
-		// Inject after <head> tag
-		headRegex := regexp.MustCompile(`(?i)(<head[^>]*>)`)
-		if headRegex.MatchString(html) {
-			html = headRegex.ReplaceAllString(html, "${1}"+injection)
-		} else {
-			// No head tag, try to inject at start of html
-			htmlRegex := regexp.MustCompile(`(?i)(<html[^>]*>)`)
-			if htmlRegex.MatchString(html) {
-				html = htmlRegex.ReplaceAllString(html, "${1}<head>"+injection+"</head>")
-			} else {
-				// Just prepend
-				html = injection + html
-			}
-		}
+		html = injectIntoHead(html, injection)
 
 		// Rewrite relative URLs to absolute
 		html = rewriteRelativeURLs(html, parsed)
@@ -170,14 +157,39 @@ func (s *Server) HandleAPIProxy(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, io.LimitReader(resp.Body, maxProxyBodyBytes))
 }
 
-// rewriteRelativeURLs converts relative URLs to absolute
+var (
+	// headTagRe matches the opening <head> tag only. The earlier
+	// pattern <head[^>]*> also matched <header ...>.
+	headTagRe = regexp.MustCompile(`(?i)<head(\s[^>]*)?>`)
+	htmlTagRe = regexp.MustCompile(`(?i)<html(\s[^>]*)?>`)
+	// rootRelativeRe matches src/href/action values that start with "/".
+	rootRelativeRe = regexp.MustCompile(`((?:src|href|action)=["'])(/[^"']*)`)
+)
+
+// injectIntoHead inserts injection once, right after the opening
+// <head> tag (or creates a head after <html>, or prepends). The text
+// is spliced in as-is; it is never used as a regexp replacement
+// template, so "$" sequences in a user's custom CSS survive.
+func injectIntoHead(html, injection string) string {
+	if loc := headTagRe.FindStringIndex(html); loc != nil {
+		return html[:loc[1]] + injection + html[loc[1]:]
+	}
+	if loc := htmlTagRe.FindStringIndex(html); loc != nil {
+		return html[:loc[1]] + "<head>" + injection + "</head>" + html[loc[1]:]
+	}
+	return injection + html
+}
+
+// rewriteRelativeURLs makes root-relative src/href/action values
+// absolute against the proxied site. Protocol-relative values
+// ("//cdn.example/x.js") already name a host and are left alone.
 func rewriteRelativeURLs(html string, base *url.URL) string {
 	baseURL := base.Scheme + "://" + base.Host
-
-	// Rewrite src and href attributes that start with /
-	// This is a simple approach - won't catch everything but handles common cases
-	re := regexp.MustCompile(`((?:src|href|action)=["'])(/[^"']*)`)
-	html = re.ReplaceAllString(html, "${1}"+baseURL+"${2}")
-
-	return html
+	return rootRelativeRe.ReplaceAllStringFunc(html, func(m string) string {
+		sub := rootRelativeRe.FindStringSubmatch(m)
+		if strings.HasPrefix(sub[2], "//") {
+			return m
+		}
+		return sub[1] + baseURL + sub[2]
+	})
 }

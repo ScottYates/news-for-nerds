@@ -17,8 +17,10 @@ import (
 //       default-src 'self';
 //       script-src 'self' https://cdnjs.cloudflare.com;
 //                                          // TinyMCE editor
-//       style-src  'self' 'unsafe-inline';  // per-widget inline styles
-//       img-src    'self' data:;            // data: URLs for favicons
+//       style-src  'self' 'unsafe-inline' https://cdnjs.cloudflare.com;
+//                                          // per-widget inline styles, TinyMCE skin
+//       img-src    'self' data: https:;     // favicons (data:), profile pictures,
+//                                          // page backgrounds, images in HTML widgets
 //       font-src   'self' https://cdnjs.cloudflare.com;
 //                                          // TinyMCE fonts
 //       frame-src  *;                      // widget iframes (proxy + user iframes)
@@ -43,8 +45,8 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 		setIfMissing(h, "Content-Security-Policy",
 			"default-src 'self'; "+
 				"script-src 'self' https://cdnjs.cloudflare.com; "+
-				"style-src 'self' 'unsafe-inline'; "+
-				"img-src 'self' data:; "+
+				"style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "+
+				"img-src 'self' data: https:; "+
 				"font-src 'self' https://cdnjs.cloudflare.com; "+
 				"frame-src *; "+
 				"connect-src 'self'; "+

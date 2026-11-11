@@ -205,7 +205,7 @@ go build -o newsfornerds ./cmd/srv
 Or use the Makefile:
 
 ```bash
-make build    # builds to ./srv
+make build    # builds ./newsfornerds
 make test     # runs tests
 ```
 

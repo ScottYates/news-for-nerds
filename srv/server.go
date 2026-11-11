@@ -1,18 +1,19 @@
 package srv
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 	"unicode"
@@ -80,11 +81,13 @@ func (s *Server) assignSlug(ctx context.Context, q *dbgen.Queries, pageID, name,
 		candidate = fmt.Sprintf("%s-%d", base, i)
 	}
 	now := time.Now()
-	_ = q.UpdatePageSlug(ctx, dbgen.UpdatePageSlugParams{
+	if err := q.UpdatePageSlug(ctx, dbgen.UpdatePageSlugParams{
 		Slug:      &candidate,
 		UpdatedAt: now,
 		ID:        pageID,
-	})
+	}); err != nil {
+		slog.Warn("failed to assign slug", "page", pageID, "slug", candidate, "error", err)
+	}
 	// slug_access is left as it is. The owner can always open the page
 	// by its slug; letting everyone else do so is the owner's choice in
 	// page settings, because the slug is derived from their name and is
@@ -92,12 +95,21 @@ func (s *Server) assignSlug(ctx context.Context, q *dbgen.Queries, pageID, name,
 	return candidate
 }
 
+// Templates and static files are compiled into the binary, so it runs
+// from any directory and does not need the source tree at the path it
+// was built from.
+//
+//go:embed templates/*.html
+var templateFS embed.FS
+
+//go:embed static
+var staticFS embed.FS
+
 type Server struct {
 	DB           *sql.DB
 	Config       *Config
 	Hostname     string
-	TemplatesDir string
-	StaticDir    string
+	templates    *template.Template
 	httpClient   *http.Client
 	proxyClient  *http.Client // fetches pages for the iframe proxy
 	proxyTrust   proxyTrust   // peers allowed to set X-Forwarded-* headers
@@ -105,8 +117,17 @@ type Server struct {
 }
 
 func New(cfg *Config, hostname string) (*Server, error) {
-	_, thisFile, _, _ := runtime.Caller(0)
-	baseDir := filepath.Dir(thisFile)
+	templates, err := template.New("").Funcs(template.FuncMap{
+		"derefInt64": func(p *int64) int64 {
+			if p == nil {
+				return 0
+			}
+			return *p
+		},
+	}).ParseFS(templateFS, "templates/*.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse templates: %w", err)
+	}
 	trust, err := parseTrustedProxies(cfg.TrustedProxies)
 	if err != nil {
 		return nil, err
@@ -123,8 +144,7 @@ func New(cfg *Config, hostname string) (*Server, error) {
 		limiter:      newRateLimiter(cfg.RateLimitPerMin),
 		Config:       cfg,
 		Hostname:     hostname,
-		TemplatesDir: filepath.Join(baseDir, "templates"),
-		StaticDir:    filepath.Join(baseDir, "static"),
+		templates:    templates,
 		// Outbound httpClient and proxyClient both use a transport
 		// hardened against SSRF: the DialContext rejects loopback,
 		// link-local, private, and cloud-metadata IP ranges, and pins
@@ -1069,6 +1089,18 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// One transaction for the whole update, so a failure part-way
+	// (a slug that is already taken, for example) leaves the page as
+	// it was. Every query until Commit goes through qtx: the pool has
+	// a single connection, which the transaction holds.
+	tx, err := s.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	defer tx.Rollback()
+	qtx := q.WithTx(tx)
+
 	if input.Name != nil {
 		page.Name = *input.Name
 	}
@@ -1095,7 +1127,7 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// Check uniqueness
-			count, err := q.CheckSlugExists(r.Context(), dbgen.CheckSlugExistsParams{
+			count, err := qtx.CheckSlugExists(r.Context(), dbgen.CheckSlugExistsParams{
 				Slug: &slugVal,
 				ID:   pageID,
 			})
@@ -1111,7 +1143,7 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 		}
 		
 		// Update slug separately
-		err = q.UpdatePageSlug(r.Context(), dbgen.UpdatePageSlugParams{
+		err = qtx.UpdatePageSlug(r.Context(), dbgen.UpdatePageSlugParams{
 			Slug:      page.Slug,
 			UpdatedAt: time.Now(),
 			ID:        pageID,
@@ -1128,7 +1160,7 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 		if *input.IsPublic {
 			val = 1
 		}
-		err = q.UpdatePagePublic(r.Context(), dbgen.UpdatePagePublicParams{
+		err = qtx.UpdatePagePublic(r.Context(), dbgen.UpdatePagePublicParams{
 			IsPublic:  &val,
 			UpdatedAt: time.Now(),
 			ID:        pageID,
@@ -1145,7 +1177,7 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 		if *input.SlugAccess {
 			val = 1
 		}
-		err = q.UpdatePageSlugAccess(r.Context(), dbgen.UpdatePageSlugAccessParams{
+		err = qtx.UpdatePageSlugAccess(r.Context(), dbgen.UpdatePageSlugAccessParams{
 			SlugAccess: &val,
 			UpdatedAt:  time.Now(),
 			ID:         pageID,
@@ -1156,7 +1188,7 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	err = q.UpdatePage(r.Context(), dbgen.UpdatePageParams{
+	err = qtx.UpdatePage(r.Context(), dbgen.UpdatePageParams{
 		Name:      page.Name,
 		BgColor:   page.BgColor,
 		BgImage:   page.BgImage,
@@ -1165,6 +1197,11 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 		ID:        pageID,
 	})
 	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
 		s.serverError(w, r, err)
 		return
 	}
@@ -1220,24 +1257,17 @@ func (s *Server) HandleAPICheckSlug(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: map[string]bool{"available": true}})
 }
 
+// renderTemplate executes a template parsed at startup. It renders
+// into a buffer first so a failing template sends an error, not half
+// a page.
 func (s *Server) renderTemplate(w http.ResponseWriter, name string, data any) error {
-	path := filepath.Join(s.TemplatesDir, name)
-	funcMap := template.FuncMap{
-		"derefInt64": func(p *int64) int64 {
-			if p == nil {
-				return 0
-			}
-			return *p
-		},
-	}
-	tmpl, err := template.New(name).Funcs(funcMap).ParseFiles(path)
-	if err != nil {
-		return fmt.Errorf("parse template %q: %w", name, err)
-	}
-	if err := tmpl.Execute(w, data); err != nil {
+	var buf bytes.Buffer
+	if err := s.templates.ExecuteTemplate(&buf, name, data); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return fmt.Errorf("execute template %q: %w", name, err)
 	}
-	return nil
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 func (s *Server) setUpDatabase(dbPath string) error {
@@ -1286,7 +1316,11 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/visited", s.HandleAPIGetVisitedLinks)
 
 	// Static files
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(s.StaticDir))))
+	staticFiles, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		return fmt.Errorf("static files: %w", err)
+	}
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFiles))))
 
 	// Start feed refresher
 	ctx := context.Background()

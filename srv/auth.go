@@ -537,18 +537,6 @@ func (s *Server) GetOrCreateVisitorID(w http.ResponseWriter, r *http.Request) st
 	return "visitor:" + vid
 }
 
-// AuthMiddleware checks authentication for protected routes
-func (s *Server) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		session, _ := s.GetUserFromRequest(r)
-		ctx := r.Context()
-		if session != nil {
-			ctx = context.WithValue(ctx, "user", session)
-		}
-		next(w, r.WithContext(ctx))
-	}
-}
-
 // HandleAuthStatus returns the current auth status
 func (s *Server) HandleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	// Check Google OAuth session first
